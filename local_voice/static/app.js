@@ -32,10 +32,77 @@ function formatMs(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return "—";
   return value >= 1000 ? (value / 1000).toFixed(2) + " с" : value.toFixed(1) + " мс";
 }
+const OLLAMA_OPERATIONS = {
+  availability: "Знакомство: удобное время",
+  name: "Знакомство: имя",
+  address: "Знакомство: обращение",
+  confirmation: "Подтверждение",
+  react: "ReAct · маршрутизация",
+  answer: "LLM · ответ кандидату",
+  scoring: "Оценка интервью",
+};
+function formatRate(value) {
+  return typeof value === "number" && Number.isFinite(value)
+    ? value.toFixed(1) + " ток/с" : "—";
+}
+function renderOllama(calls, summary) {
+  const list = $("ollama-calls");
+  list.replaceChildren();
+  if (!calls?.length) {
+    const empty = document.createElement("p");
+    empty.className = "timing-note";
+    empty.textContent = "В этой реплике Ollama не вызывалась.";
+    list.appendChild(empty);
+  } else {
+    for (const call of calls) {
+      const item = document.createElement("div");
+      item.className = "ollama-call";
+      const heading = document.createElement("strong");
+      heading.textContent = (OLLAMA_OPERATIONS[call.operation] || call.operation)
+        + (call.status === "error" ? " · ошибка" : "");
+      item.appendChild(heading);
+      const details = document.createElement("div");
+      details.className = "ollama-call-details";
+      const values = [
+        ["HTTP", formatMs(call.wall_ms)],
+        ["В Ollama", formatMs(call.total_ms)],
+        ["Загрузка", formatMs(call.load_ms)],
+        ["Prompt eval", formatMs(call.prompt_ms)],
+        ["Генерация", formatMs(call.decode_ms)],
+        ["Входных токенов", call.input_tokens ?? "—"],
+        ["Выходных токенов", call.output_tokens ?? "—"],
+        ["Скорость генерации", formatRate(call.decode_tokens_per_s)],
+        ["Скорость промпта", formatRate(call.prompt_tokens_per_s)],
+      ];
+      for (const [name, value] of values) {
+        const cell = document.createElement("div");
+        const label = document.createElement("span");
+        label.textContent = name;
+        const number = document.createElement("b");
+        number.textContent = String(value);
+        cell.append(label, number);
+        details.appendChild(cell);
+      }
+      item.appendChild(details);
+      list.appendChild(item);
+    }
+  }
+  const operations = summary?.ollama_summary || {};
+  const summaryLines = Object.entries(operations).map(([name, stats]) =>
+    (OLLAMA_OPERATIONS[name] || name) +
+    ": " + stats.calls + " выз. · HTTP ср. " + formatMs(stats.avg_wall_ms) +
+    " / p95 " + formatMs(stats.p95_wall_ms) +
+    " · генерация " + formatRate(stats.avg_decode_tokens_per_s)
+  );
+  $("ollama-summary").textContent = summaryLines.length
+    ? summaryLines.join("\n") : "Сводка появится после завершения реплик.";
+}
+
 function showTiming(event) {
   timingHistory.set(event.timing.turn_id, event.timing);
   timingSummary = event.summary || timingSummary;
   const last = event.timing;
+  renderOllama(last.ollama_calls, timingSummary);
   const stateNames = {
     running: "обрабатывается", completed: "завершено",
     interrupted: "прервано", failed: "ошибка", no_speech: "нет речи",
@@ -146,6 +213,7 @@ async function start() {
   timingHistory = new Map();
   timingSummary = {completed_turns: 0, average_ms: {}, p95_ms: {}};
   $("timing-grid").replaceChildren();
+  renderOllama([], timingSummary);
   $("timing-summary").textContent = "Измерения начнутся после подключения.";
   $("timing-history").textContent = "";
   $("timing-turn").textContent = "Нет данных";

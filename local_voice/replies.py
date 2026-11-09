@@ -4,10 +4,12 @@ No streaming of raw model content into speech: the full structured response
 must pass validation before either WebSocket text or PCM is emitted.
 """
 import re
+from time import perf_counter
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from local_voice.ollama_metrics import record_ollama_call
 
 
 SPEECH_CONTRACT_VERSION = "validated-json-v2"
@@ -59,6 +61,7 @@ async def generate_candidate_reply(
     transcript: list[dict[str, str]],
     vacancy: bool,
     timings_ms: dict[str, float] | None = None,
+    ollama_calls: list[dict[str, str | float | int]] | None = None,
 ) -> str:
     """Only a validated JSON field is returned for browser and TTS output."""
     messages: list[dict[str, str]] = [
@@ -84,35 +87,35 @@ async def generate_candidate_reply(
         }
         for turn in transcript[-16:]
     )
-    response = await client.post(
-        base_url.rstrip("/") + "/api/chat",
-        json={
-            "model": model,
-            "messages": messages,
-            "stream": False,
-            "think": False,
-            "format": CandidateReply.model_json_schema(),
-            "options": {
-                "temperature": 0 if vacancy else 0.35,
-                "num_predict": 320 if vacancy else 220,
+    started = perf_counter()
+    try:
+        response = await client.post(
+            base_url.rstrip("/") + "/api/chat",
+            json={
+                "model": model,
+                "messages": messages,
+                "stream": False,
+                "think": False,
+                "format": CandidateReply.model_json_schema(),
+                "options": {
+                    "temperature": 0 if vacancy else 0.35,
+                    "num_predict": 320 if vacancy else 220,
+                },
             },
-        },
-        timeout=120,
+            timeout=120,
+        )
+        response.raise_for_status()
+        data: dict[str, Any] = response.json()
+    except Exception:
+        record_ollama_call(
+            {}, operation="answer", wall_ms=(perf_counter() - started) * 1000,
+            timings_ms=timings_ms, calls=ollama_calls, success=False,
+        )
+        raise
+    record_ollama_call(
+        data, operation="answer", wall_ms=(perf_counter() - started) * 1000,
+        timings_ms=timings_ms, calls=ollama_calls,
     )
-    response.raise_for_status()
-    data: dict[str, Any] = response.json()
-    # Ollama reports its own backend phases in nanoseconds. These are
-    # independent timings and may overlap with our full HTTP wall time.
-    if timings_ms is not None:
-        for source_key, result_key in (
-            ("load_duration", "ollama_load_ms"),
-            ("prompt_eval_duration", "ollama_prompt_ms"),
-            ("eval_duration", "ollama_decode_ms"),
-            ("total_duration", "ollama_total_ms"),
-        ):
-            duration_ns = data.get(source_key)
-            if isinstance(duration_ns, (int, float)) and duration_ns >= 0:
-                timings_ms[result_key] = duration_ns / 1_000_000
     message = data.get("message", {})
     # Ignore message.thinking altogether. Never send the raw content directly.
     parsed = CandidateReply.model_validate_json(message["content"])

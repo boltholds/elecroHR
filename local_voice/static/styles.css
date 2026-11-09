@@ -26,3 +26,14 @@ h3{margin:0 0 16px}.section-heading span{font-size:12px;color:#8ba2c5}
 .timing-details{margin-top:12px;border-top:1px solid #283850;padding-top:12px}
 .timing-details summary{font-size:12px;color:#a7beea;cursor:pointer}
 #timing-history{max-height:230px;overflow-y:auto;font-size:11px;line-height:1.5}
+
+.ollama-section{margin-top:18px;padding-top:18px;border-top:1px solid #2b3851}
+.ollama-section h4{font-size:14px;margin:0 0 8px}
+.ollama-calls{display:grid;gap:10px}
+.ollama-call{background:#101827;border:1px solid #2b3851;border-radius:12px;padding:13px}
+.ollama-call>strong{display:block;font-size:13px;margin-bottom:11px}
+.ollama-call-details{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px}
+.ollama-call-details>div{display:flex;flex-direction:column;gap:5px}
+.ollama-call-details span{font-size:11px;color:#91a0ba}
+.ollama-call-details b{font-size:14px;font-variant-numeric:tabular-nums}
+.ollama-summary{margin:10px 0 0;line-height:1.6;white-space:pre-wrap;color:#afc2df}

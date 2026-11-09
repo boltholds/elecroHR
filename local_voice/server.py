@@ -68,6 +68,7 @@ class Interview:
     timings: list[TurnTiming] = field(default_factory=list)
     active_timing: TurnTiming | None = None
     scoring_ms: float = 0.0
+    scoring_ollama_calls: list[dict[str, str | float | int]] = field(default_factory=list)
     _vad_cpu_ms: float = 0.0
     _vad_frames: int = 0
     _speech_started_at: float = 0.0
@@ -91,6 +92,7 @@ class Interview:
             "summary": summarize_timings(self.timings),
             "turns": [item.public() for item in self.timings],
             "scoring_ms": round(self.scoring_ms, 2),
+            "scoring_ollama_calls": [dict(call) for call in self.scoring_ollama_calls],
         }
 
     async def emit_timing(self, timing: TurnTiming | None = None) -> None:
@@ -265,6 +267,7 @@ class Interview:
                 plan = await self.dialogue.respond(
                     text, self.transcript, self.http, self.settings, self.rag,
                     self.questions, timings_ms=timing.stages_ms,
+                    ollama_calls=timing.ollama_calls,
                 )
             finally:
                 timing.add("dialogue_ms", elapsed_ms(dialogue_started))
@@ -292,6 +295,7 @@ class Interview:
                     transcript=self.transcript,
                     vacancy=plan.response_type == "vacancy",
                     timings_ms=timing.stages_ms,
+                    ollama_calls=timing.ollama_calls,
                 )
             except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
                 LOG.exception("Failed to produce a validated candidate-facing reply")
@@ -345,7 +349,8 @@ class Interview:
             score_started = perf_counter()
             try:
                 self.report = await score_transcript(
-                    self.session_id, self.screening_transcript, self.settings, self.http
+                    self.session_id, self.screening_transcript, self.settings, self.http,
+                    ollama_calls=self.scoring_ollama_calls,
                 )
             except Exception:
                 LOG.exception("Local scoring failed")

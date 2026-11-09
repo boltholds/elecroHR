@@ -212,3 +212,35 @@ WebSocket, планирования звука и системных часов 
     curl.exe http://127.0.0.1:8000/health
 
 В ответе должно быть `metrics_contract: turn-timing-v1`.
+
+
+## Ollama profiling по каждому вызову
+
+В «Задержках по этапам» теперь есть отдельный блок «Профилирование
+Ollama»: он показывает вызовы Qwen3 для знакомства (`availability`,
+`name`, `address`, `confirmation`), выбора действия (`react`) и
+генерации ответа (`answer`) — отдельно для каждой реплики. После
+завершения интервью сохраняется также вызов `scoring`.
+
+Из нестримингового ответа `/api/chat` читаются только числовые поля:
+`total_duration`, `load_duration`, `prompt_eval_duration`,
+`eval_duration` (Ollama отдаёт наносекунды; интерфейс показывает
+миллисекунды), `prompt_eval_count` и `eval_count` (количество токенов).
+Скорость генерации считается как `eval_count / eval_duration` в
+токенах в секунду; при нулевом или отсутствующем duration скорость
+не показывается. Отдельно замеряется HTTP wall time, включающий
+сетевой обмен, очередь и обработку на стороне Ollama.
+
+Данные не содержат текста промптов, ответа или скрытых рассуждений.
+Для каждого вызова в `timings.turns[].ollama_calls[]` доступны
+`operation`, `wall_ms`, серверные времена, `input_tokens`,
+`output_tokens`, `decode_tokens_per_s` и `prompt_tokens_per_s`.
+Если Ollama не вернул часть полей, они пропускаются; отсутствие метрик
+не обозначает нулевое время. Агрегаты среднего и p95 HTTP-времени
+по каждому типу вызова находятся в `timings.summary.ollama_summary`.
+Данные итоговой оценки — в `timings.scoring_ollama_calls`.
+
+Важно: `react_llm_ms` и `react_ollama_wall_ms` описывают почти один
+и тот же промежуток, а `react_ollama_prompt_ms` и
+`react_ollama_decode_ms` входят в серверный `react_ollama_total_ms`.
+Не складывайте эти значения для расчёта полной задержки.

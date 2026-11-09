@@ -16,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.rag import RAGService
 from local_voice.core import LOCAL_WEIGHTS
+from local_voice.ollama_metrics import record_ollama_call
 from local_voice.settings import LocalSettings
 from local_voice.question_bank import QuestionBank
 
@@ -147,24 +148,41 @@ class HRDialogue:
         model: type[T],
         instructions: str,
         utterance: str,
+        *,
+        timings_ms: dict[str, float] | None = None,
+        ollama_calls: list[dict[str, str | float | int]] | None = None,
+        operation: str = "react",
     ) -> T:
-        response = await client.post(
-            config.ollama_base_url.rstrip("/") + "/api/chat",
-            json={
-                "model": config.llm_model,
-                "stream": False,
-                "think": False,
-                "format": model.model_json_schema(),
-                "options": {"temperature": 0, "num_predict": 180},
-                "messages": [
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": utterance[:3500]},
-                ],
-            },
-            timeout=80,
+        started = perf_counter()
+        try:
+            response = await client.post(
+                config.ollama_base_url.rstrip("/") + "/api/chat",
+                json={
+                    "model": config.llm_model,
+                    "stream": False,
+                    "think": False,
+                    "format": model.model_json_schema(),
+                    "options": {"temperature": 0, "num_predict": 180},
+                    "messages": [
+                        {"role": "system", "content": instructions},
+                        {"role": "user", "content": utterance[:3500]},
+                    ],
+                },
+                timeout=80,
+            )
+            response.raise_for_status()
+            data = response.json()
+        except Exception:
+            record_ollama_call(
+                {}, operation=operation, wall_ms=(perf_counter() - started) * 1000,
+                timings_ms=timings_ms, calls=ollama_calls, success=False,
+            )
+            raise
+        record_ollama_call(
+            data, operation=operation, wall_ms=(perf_counter() - started) * 1000,
+            timings_ms=timings_ms, calls=ollama_calls,
         )
-        response.raise_for_status()
-        return model.model_validate_json(response.json()["message"]["content"])
+        return model.model_validate_json(data["message"]["content"])
 
     def vacancy_turn(
         self, question: str, rag: RAGService, search_query: str = "",
@@ -219,6 +237,7 @@ class HRDialogue:
         rag: RAGService,
         questions: QuestionBank | None = None,
         timings_ms: dict[str, float] | None = None,
+        ollama_calls: list[dict[str, str | float | int]] | None = None,
     ) -> Turn:
         if self.phase == Phase.finished:
             return Turn(text="Разговор завершён. Спасибо!")
@@ -236,6 +255,8 @@ class HRDialogue:
                 "yes — явно согласен, no — явно отказывает или просит закончить, "
                 "unknown — неясно. Ничего не додумывай, верни JSON.",
                 utterance,
+                timings_ms=timings_ms, ollama_calls=ollama_calls,
+                operation=self.phase.value,
             )
             if intent.answer == "no":
                 self.phase = Phase.finished
@@ -253,6 +274,8 @@ class HRDialogue:
                 "evidence — ДОСЛОВНАЯ часть входной фразы, содержащая имя. "
                 "Не предполагай имя по контексту и не определяй пол.",
                 utterance,
+                timings_ms=timings_ms, ollama_calls=ollama_calls,
+                operation=self.phase.value,
             )
             name = verified_name(extracted.name, extracted.evidence, utterance)
             if not name:
@@ -273,6 +296,8 @@ class HRDialogue:
                 "evidence — дословный фрагмент, подтверждающий выбор формы обращения. "
                 "Не определяй обращение по полу, интонации или имени.",
                 utterance,
+                timings_ms=timings_ms, ollama_calls=ollama_calls,
+                operation=self.phase.value,
             )
             evidence = extracted.evidence.strip()
             if (
@@ -300,6 +325,8 @@ class HRDialogue:
                 "yes = подтверждает, no = исправляет или отказывается, "
                 "unknown = неясно. Ответ только JSON.",
                 utterance,
+                timings_ms=timings_ms, ollama_calls=ollama_calls,
+                operation=self.phase.value,
             )
             if intent.answer == "no":
                 self.phase = Phase.name
@@ -338,7 +365,8 @@ class HRDialogue:
             return Turn(text=f"Отлично, {self.preferred_name}. Начнём с LLM. {question}")
 
         return await self.plan_screening(
-            utterance, transcript, client, config, rag, questions, timings_ms
+            utterance, transcript, client, config, rag, questions, timings_ms,
+            ollama_calls,
         )
 
     async def plan_screening(
@@ -350,6 +378,7 @@ class HRDialogue:
         rag: RAGService,
         questions: QuestionBank | None = None,
         timings_ms: dict[str, float] | None = None,
+        ollama_calls: list[dict[str, str | float | int]] | None = None,
     ) -> Turn:
         history = json.dumps(transcript[-14:], ensure_ascii=False)
         request = json.dumps({
@@ -364,7 +393,11 @@ class HRDialogue:
         }, ensure_ascii=False)
         react_started = perf_counter()
         try:
-            decision = await self.structured(client, config, ReActDecision, SCENARIO, request)
+            decision = await self.structured(
+                client, config, ReActDecision, SCENARIO, request,
+                timings_ms=timings_ms, ollama_calls=ollama_calls,
+                operation="react",
+            )
         except (httpx.HTTPError, ValueError, KeyError):
             # Retry rather than guessing a vacancy answer or silently changing topics.
             return Turn(text="Извините, не удалось обработать вопрос. Повторите, пожалуйста.")
