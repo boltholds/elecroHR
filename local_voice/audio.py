@@ -1,22 +1,20 @@
-"""Inference adapters: Whisper, Silero ONNX VAD, and Silero package TTS.
+"""Audio inference adapters for Whisper and Silero VAD.
 
-Audio transport: signed little-endian PCM16; 16 kHz input, 24 kHz output.
-Only one interview is active, so the stateful Silero VAD is never shared.
+TTS is now a separate Chatterbox multilingual container accessed over HTTP.
+Mic input: PCM16/16kHz. Speaker output: PCM16/24kHz.
 """
-from pathlib import Path
-from typing import Any
-
 import numpy as np
+import httpx
 
 
-def load_tts_model(torch: Any, model_path: Path) -> Any:
-    """Keep the loaded object: Silero's custom .to() can return None."""
-    model = torch.package.PackageImporter(str(model_path)).load_pickle("tts_models", "model")
-    if model is None or not callable(getattr(model, "apply_tts", None)):
-        raise RuntimeError("Silero TTS package did not contain a usable model")
-    # Do not chain .to(): some versions of Silero mutate in-place and return None.
-    model.to(torch.device("cpu"))
-    return model
+def validate_tts_response(response: httpx.Response) -> bytes:
+    response.raise_for_status()
+    if response.headers.get("x-sample-rate") != "24000":
+        raise ValueError("TTS returned an unexpected sample rate")
+    pcm = response.content
+    if not pcm or len(pcm) % 2:
+        raise ValueError("TTS returned empty or malformed PCM16")
+    return pcm
 
 
 class AudioModels:
@@ -28,12 +26,14 @@ class AudioModels:
         torch.set_num_threads(2)
         self._torch = torch
         self.vad = load_silero_vad(onnx=True)
-        self.whisper = WhisperModel(str(settings.whisper_path), device="cpu", compute_type="int8")
-        self.tts = load_tts_model(torch, settings.tts_path)
-        self.speaker = settings.tts_speaker
-        # Fail during startup rather than after the candidate has connected.
-        if not self.synthesize("Здравствуйте!"):
-            raise RuntimeError("Silero TTS warmup returned empty audio")
+        self.whisper = WhisperModel(
+            str(settings.whisper_path), device="cpu", compute_type="int8"
+        )
+        self.tts_url = settings.tts_base_url.rstrip("/") + "/synthesize"
+        self._http = httpx.Client(timeout=150)
+
+    def close(self) -> None:
+        self._http.close()
 
     def reset_vad(self) -> None:
         self.vad.reset_states()
@@ -51,7 +51,8 @@ class AudioModels:
         return " ".join(segment.text.strip() for segment in segments).strip()
 
     def synthesize(self, text: str) -> bytes:
-        with self._torch.inference_mode():
-            audio = self.tts.apply_tts(text=text, speaker=self.speaker, sample_rate=24000)
-        samples = audio.detach().cpu().numpy()
-        return (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
+        response = self._http.post(
+            self.tts_url,
+            json={"text": text, "language": "auto"},
+        )
+        return validate_tts_response(response)
