@@ -13,7 +13,7 @@ def example_assessment(quote: str) -> dict:
         "criteria": [
             {
                 "criterion": name, "score": (weight // 2 if name == "rag_retrieval" else 0),
-                "max_score": weight, "assessed": name == "docker",
+                "max_score": weight, "assessed": name == "rag_retrieval",
                 "evidence": [quote] if name == "docker" else [],
                 "explanation": "Есть пример." if name == "docker" else "Не обсуждалось.",
             }
