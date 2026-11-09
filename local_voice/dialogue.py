@@ -103,6 +103,7 @@ class Turn:
     knowledge: str = ""
     sources: list[dict[str, str]] = field(default_factory=list)
     question_id: str = ""
+    response_type: Literal["dialogue", "vacancy"] = "dialogue"
 
 
 @dataclass
@@ -158,6 +159,45 @@ class HRDialogue:
         response.raise_for_status()
         return model.model_validate_json(response.json()["message"]["content"])
 
+    def vacancy_turn(
+        self, question: str, rag: RAGService, search_query: str = "",
+    ) -> Turn:
+        """Answer a candidate's vacancy question from public RAG evidence."""
+        query = search_query.strip() or question
+        hits = rag.search_vacancy(query, top_k=5)
+        if not hits and search_query.strip():
+            hits = rag.search_vacancy(question, top_k=5)
+        self.actions.append({"action": "search_vacancy", "query": query})
+        self.actions = self.actions[-20:]
+        if not hits:
+            return Turn(
+                text="Этого условия нет в описании вакансии. Уточните, пожалуйста, у рекрутера.",
+                response_type="vacancy",
+            )
+        snippets = [
+            {"source": hit.source, "chunk_id": hit.chunk_id, "text": hit.text[:1400]}
+            for hit in hits
+        ]
+        return Turn(
+            instruction=(
+                "Кандидат спрашивает о вакансии: " + question[:500] + ". "
+                "Ответь ТОЛЬКО на этот вопрос, используя ТОЛЬКО факты из результатов "
+                "search_vacancy. Ответь по-русски одним или двумя короткими предложениями. "
+                "Если ответ подтверждён лишь частично, явно назови неизвестную часть. "
+                "Если подходящих фактов нет, скажи, что это уточнит живой рекрутер. "
+                "Если вакансия демонстрационная, обозначь её тестовый характер. "
+                "Не выдумывай зарплату, льготы, условия релокации или обещания найма. "
+                "Не задавай новый технический вопрос в этой реплике; после ответа "
+                "сохрани текущий этап интервью."
+            ),
+            knowledge=json.dumps(
+                {"tool": "search_vacancy", "query": query, "results": snippets},
+                ensure_ascii=False,
+            ),
+            sources=[{"source": hit.source, "chunk_id": hit.chunk_id} for hit in hits],
+            response_type="vacancy",
+        )
+
     async def respond(
         self,
         utterance: str,
@@ -169,6 +209,12 @@ class HRDialogue:
     ) -> Turn:
         if self.phase == Phase.finished:
             return Turn(text="Разговор завершён. Спасибо!")
+
+        # Candidate questions about the vacancy are allowed in every phase,
+        # including introductions. Answer and resume the same phase afterwards.
+        from local_voice.vacancy import is_vacancy_question
+        if is_vacancy_question(utterance):
+            return self.vacancy_turn(utterance, rag)
 
         if self.phase == Phase.availability:
             intent = await self.structured(
@@ -320,22 +366,9 @@ class HRDialogue:
                     question_id=current.question_id,
                 )
         if action == "search_vacancy":
-            query = decision.query.strip() or utterance
-            hits = rag.search_vacancy(query, top_k=3)
-            snippets = [
-                {"source": hit.source, "chunk_id": hit.chunk_id, "text": hit.text[:1100]}
-                for hit in hits
-            ]
-            return Turn(
-                instruction=(
-                    "Ответь на вопрос кандидата о вакансии, используя ТОЛЬКО результаты "
-                    "инструмента search_vacancy. Если источников нет или они не подтверждают "
-                    "нужный факт, честно скажи, что сведения уточнит HR. "
-                    "Не добавляй непроверенных условий. Вернись затем к интервью."
-                ),
-                knowledge=json.dumps({"tool": "search_vacancy", "results": snippets}, ensure_ascii=False),
-                sources=[{"source": item["source"], "chunk_id": item["chunk_id"]} for item in snippets],
-            )
+            # vacancy_turn records the action itself; do not duplicate it.
+            self.actions.pop()
+            return self.vacancy_turn(utterance, rag, search_query=decision.query)
         if questions is not None:
             query = decision.query.strip() or decision.instruction.strip() or utterance
             selected = questions.next_question(query, set(self.asked_question_ids))
@@ -376,12 +409,15 @@ class HRDialogue:
         self.pending_question_id = ""
 
     def reply_prompt(self, plan: Turn) -> str:
-        name = self.preferred_name
-        form = self.form
+        address = (
+            f"Кандидат подтвердил обращение: имя {self.preferred_name!r}, "
+            f"на «{self.form}». Соблюдай это обращение. "
+            if self.confirmed else
+            "Имя и форма обращения ещё не подтверждены. Не придумывай личные данные. "
+        )
         return (
-            "Ты голосовой HR-рекрутер. Кандидат лично подтвердил обращение: "
-            f"имя {name!r}, на «{form}». Соблюдай обращение в своей речи. "
-            "Стадия: технический скрининг, этап представления уже пройден. "
+            "Ты голосовой HR-рекрутер. " + address +
+            "Текущая стадия диалога: " + self.phase.value + ". "
             "Говори коротко, естественно, по-русски, не более 2 предложений. "
             "Задавай максимум один вопрос за раз. Не повторяй предыдущие вопросы. "
             "Не обсуждай оценку или решение о найме. "

@@ -100,7 +100,9 @@ async def test_complete_introduction_then_react_and_rag():
             "А работа удалённая?", transcript, client, settings, rag
         )
         assert plan.sources[0]["chunk_id"] == "chunk-001"
-        assert rag.calls == ["удалённая работа"]
+        assert rag.calls == ["А работа удалённая?"]
+        assert plan.response_type == "vacancy"
+        assert dialogue.phase == Phase.screening
         assert "search_vacancy" in plan.knowledge
         assert "Саша" in dialogue.reply_prompt(plan)
         assert "«ты»" in dialogue.reply_prompt(plan)

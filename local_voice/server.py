@@ -20,6 +20,7 @@ from local_voice.audio import AudioModels
 from local_voice.core import EndpointDetector, LocalReport, empty_assessment, make_report
 from local_voice.dialogue import GREETING, HRDialogue, Phase
 from local_voice.question_bank import QuestionBank
+from local_voice.vacancy import VacancyRAG
 from local_voice.scoring import score_transcript
 from local_voice.settings import LocalSettings
 
@@ -186,7 +187,10 @@ class Interview:
                 "POST", self.settings.ollama_base_url.rstrip("/") + "/api/chat",
                 json={
                     "model": self.settings.llm_model, "messages": messages, "stream": True,
-                    "think": False, "options": {"temperature": 0.45, "num_predict": 170},
+                    "think": False, "options": {
+                        "temperature": 0 if plan.response_type == "vacancy" else 0.45,
+                        "num_predict": 220 if plan.response_type == "vacancy" else 170,
+                    },
                 },
                 timeout=120.0,
             ) as stream:
@@ -272,9 +276,7 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         audio = await asyncio.to_thread(AudioModels, config)
-        rag = await RAGService.load(
-            config.knowledge_dir, only_documents=frozenset({"vacancy.md"})
-        )
+        rag = await VacancyRAG.load(config.knowledge_dir / "vacancy.md")
         questions = await QuestionBank.load(config.knowledge_dir / "faq.md")
         async with httpx.AsyncClient() as client:
             app.state.audio, app.state.rag, app.state.client = audio, rag, client
