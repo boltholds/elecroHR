@@ -133,6 +133,12 @@ async function start() {
           break;
         }
         case "session_finished": void finish(); break;
+        case "question_bank":
+          $("question-bank").textContent = "Банк вопросов: " + event.total + " вопросов";
+          break;
+        case "question":
+          $("rag").textContent = "Вопрос из RAG: " + event.question_id;
+          break;
         case "agent_text": addLine("agent", event.text); break;
         case "candidate_text": addLine("candidate", event.text); break;
         case "interrupt": stopPlayback(); break;
