@@ -34,7 +34,7 @@ _VACANCY_TOPIC = re.compile(
     r"сколько\s+плат|удал[её]н|дистанцион|офис|гибрид|релокац|"
     r"переезд|работать\s+из|график|смен|выходн|занятост|"
     r"час(?:ов|а)?\s+в\s+день|оформлен|договор|трудоустройств|"
-    r"дмс|больничн|отпуск|соцпакет|преми|бонус|льгот|"
+    r"дмс|больничн|отпуск|соцпакет|преми|бонус|льгот|опцион|"
     r"оборудован|ноутбук|компенсац|компан|работодател|"
     r"команд|сотрудник|обязанност|задач[аи]|"
     r"требован|стек|технологи[ия]|фреймворк|"
@@ -112,6 +112,9 @@ def public_vacancy_chunks(markdown: str) -> list[RetrievedChunk]:
             continue
         end = headers[number + 1].start() if number + 1 < len(headers) else len(markdown)
         body = markdown[header.end():end]
+        # Discard trailing internal QA instructions outside the public FAQ.
+        # The demo vacancy ends section 16 with an operational test checklist.
+        body = re.split(r"(?m)^---\s*$|^###\s+Как тестировать", body, maxsplit=1)[0]
         meta = _METADATA.search(body)
         metadata = meta.group(0) if meta else ""
         kind = _KIND.search(metadata)
@@ -121,7 +124,12 @@ def public_vacancy_chunks(markdown: str) -> list[RetrievedChunk]:
         prefix = source_id.group(1) if source_id else hashlib.sha256(
             section.encode("utf-8")
         ).hexdigest()[:12]
-        for part_number, piece in enumerate(_split_items(body), start=1):
+        pieces = _split_items(body)
+        if section.casefold().startswith("как отвечать, если информации"):
+            # This section is tagged faq but also contains HR instructions.
+            # Only explicit candidate-facing Q&A entries are source facts.
+            pieces = [part for part in pieces if part.startswith("**")]
+        for part_number, piece in enumerate(pieces, start=1):
             result.append(RetrievedChunk(
                 chunk_id=f"{prefix}-{part_number:02d}",
                 source="vacancy.md",

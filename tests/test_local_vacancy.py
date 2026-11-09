@@ -53,6 +53,7 @@ def test_only_public_sections_are_indexed(rag):
     assert "Шесть основных вопросов" not in corpus
     assert "согласие на запись" not in corpus
     assert "Не выдавайте" not in corpus
+    assert "Как тестировать звонок" not in corpus
     assert all("internal_policy" not in chunk.text for chunk in rag.chunks)
 
 
@@ -64,7 +65,7 @@ def test_salary_and_dms_are_grounded_in_public_facts(rag):
 
 
 def test_bm25_returns_nothing_for_absent_benefit(rag):
-    assert rag.search_vacancy("Оплачивается ли релокация?") == []
+    assert rag.search_vacancy("Есть ли опционы?") == []
 
 
 def test_normal_markdown_without_internal_metadata_is_supported():
@@ -95,7 +96,7 @@ async def test_unknown_vacancy_condition_has_fixed_safe_answer(rag):
     settings = LocalSettings(_env_file=None)
     async with httpx.AsyncClient() as client:
         plan = await dialogue.respond(
-            "Оплачивается ли релокация?", [], client, settings, rag
+            "Есть ли опционы?", [], client, settings, rag
         )
     assert plan.response_type == "vacancy"
     assert "нет в описании вакансии" in plan.text
