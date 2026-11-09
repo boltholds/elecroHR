@@ -22,6 +22,7 @@ from local_voice.dialogue import GREETING, HRDialogue, Phase
 from local_voice.question_bank import QuestionBank
 from local_voice.vacancy import VacancyRAG
 from local_voice.scoring import score_transcript
+from local_voice.replies import generate_candidate_reply, safe_reply_fallback
 from local_voice.settings import LocalSettings
 
 LOG = logging.getLogger(__name__)
@@ -167,50 +168,23 @@ class Interview:
                 await self.speak_text(plan.text)
                 return
 
-            messages: list[dict[str, str]] = [
-                {"role": "system", "content": self.dialogue.reply_prompt(plan)}
-            ]
-            messages.extend(
-                {
-                    "role": "user" if turn["role"] == "candidate" else "assistant",
-                    "content": turn["text"],
-                }
-                for turn in self.transcript[-16:]
-            )
-            self.generation += 1
-            ident = self.generation
-            self.pending_text = ""
-            await self.set_state("speaking")
-            await self.send({"type": "audio_start", "generation": ident, "sample_rate": 24000})
-            pending = ""
-            async with self.http.stream(
-                "POST", self.settings.ollama_base_url.rstrip("/") + "/api/chat",
-                json={
-                    "model": self.settings.llm_model, "messages": messages, "stream": True,
-                    "think": False, "options": {
-                        "temperature": 0 if plan.response_type == "vacancy" else 0.45,
-                        "num_predict": 220 if plan.response_type == "vacancy" else 170,
-                    },
-                },
-                timeout=120.0,
-            ) as stream:
-                stream.raise_for_status()
-                async for line in stream.aiter_lines():
-                    if ident != self.generation:
-                        return
-                    if not line.strip():
-                        continue
-                    event = json.loads(line)
-                    pending += event.get("message", {}).get("content", "")
-                    ready, pending = sentences(pending)
-                    for sentence in ready:
-                        await self.synthesize_sentence(sentence, ident)
-                    if event.get("done"):
-                        break
-            if pending.strip():
-                await self.synthesize_sentence(pending.strip(), ident)
-            if ident == self.generation:
-                await self.send({"type": "audio_end", "generation": ident})
+            # Never stream raw model text directly into TTS or the transcript:
+            # malformed content and model self-narration could become audible.
+            try:
+                reply = await generate_candidate_reply(
+                    client=self.http,
+                    base_url=self.settings.ollama_base_url,
+                    model=self.settings.llm_model,
+                    prompt=self.dialogue.reply_prompt(plan),
+                    transcript=self.transcript,
+                    vacancy=plan.response_type == "vacancy",
+                )
+            except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
+                LOG.exception("Failed to produce a validated candidate-facing reply")
+                reply = safe_reply_fallback(plan.response_type == "vacancy")
+            if self.state != "thinking":
+                return
+            await self.speak_text(reply)
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -18,6 +18,10 @@ def rag() -> VacancyRAG:
 
 
 @pytest.mark.parametrize("utterance", [
+    "Расскажите больше о вакансии.",
+    "А можно спросить под подробнее вакансии?",
+    "а можно поподробнее про вакансию.",
+    "Расскажи поподробнее о вакансии",
     "Какая зарплата?",
     "Сколько платят?",
     "А работа удалённая?",
@@ -119,3 +123,39 @@ async def test_followup_to_vacancy_does_not_consume_question(rag):
     assert dialogue.asked_question_ids == ["RAG-Q007"]
     assert dialogue.last_question_id == ""
     assert dialogue.phase == Phase.screening
+
+
+@pytest.mark.parametrize("query", [
+    "Расскажите больше о вакансии.",
+    "А можно спросить под подробнее вакансии?",
+    "а можно поподробнее про вакансию.",
+])
+def test_broad_vacancy_request_returns_real_overview(rag, query):
+    from local_voice.vacancy import is_vacancy_overview_request
+
+    assert is_vacancy_overview_request(query)
+    chunks = rag.search_vacancy(query, top_k=7)
+    corpus = " ".join(chunk.text for chunk in chunks)
+    assert any("Компания:" in chunk.text for chunk in chunks)
+    assert "LLM-разработчик" in corpus
+    assert "Главная задача" in corpus
+    assert all("internal_policy" not in chunk.text for chunk in chunks)
+
+
+async def test_general_vacancy_request_does_not_advance_screening(rag):
+    dialogue = HRDialogue(
+        phase=Phase.screening,
+        confirmed=True, preferred_name="Антон", form="ты",
+        asked_question_ids=["RAG-Q001"],
+    )
+    async with httpx.AsyncClient() as client:
+        plan = await dialogue.respond(
+            "Расскажите больше о вакансии.",
+            [{"role": "candidate", "text": "Расскажите больше о вакансии."}],
+            client, LocalSettings(_env_file=None), rag,
+        )
+    assert plan.response_type == "vacancy"
+    assert plan.sources
+    assert "Главная задача" in plan.knowledge
+    assert dialogue.phase == Phase.screening
+    assert dialogue.asked_question_ids == ["RAG-Q001"]

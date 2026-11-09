@@ -43,8 +43,23 @@ _VACANCY_TOPIC = re.compile(
     r"стаж|опыт\s+нуж|английск",
     re.IGNORECASE,
 )
+_OVERVIEW_REQUEST = re.compile(
+    r"(?:ваканс|об\s+этой\s+работе|о\s+должности)",
+    re.IGNORECASE,
+)
+_OVERVIEW_DETAIL = re.compile(
+    r"(?:подроб|побольш|больше|расскаж|описан|что\s+за|в\s+ч[её]м\s+суть)",
+    re.IGNORECASE,
+)
+
+
+def is_vacancy_overview_request(text: str) -> bool:
+    """General request for a vacancy description rather than one specific condition."""
+    return bool(_OVERVIEW_REQUEST.search(text) and _OVERVIEW_DETAIL.search(text))
+
+
 _QUESTION_FORM = re.compile(
-    r"\?|(?:^|\s)(?:сколько|какой|какая|какие|какое|где|когда|"
+    r"\?|(?:^|\s)(?:подробн(?:ее|о)|побольш(?:е)?|больше|сколько|какой|какая|какие|какое|где|когда|"
     r"можно|подскажите|расскажите|нужен|нужно|нужны|"
     r"требуется|есть|будет|дают|предусмотрен|платят|"
     r"интересует|полагается|проводится|можете|"
@@ -150,6 +165,28 @@ class VacancyRAG(RAGService):
         return cls(public_vacancy_chunks(markdown))
 
     def search_vacancy(self, query: str, top_k: int = 5) -> list[RetrievedChunk]:
+        if is_vacancy_overview_request(query):
+            # A broad question has little lexical specificity. Provide a compact
+            # factual overview, not arbitrary BM25 matches on "вакансия".
+            priorities = (
+                "**Компания:**", "**Должность:**", "**Уровень:**",
+                "**Главная задача:**", "**Формат:**", "**Зарплата:**",
+                "Продукт и команда:",
+            )
+            overview: list[RetrievedChunk] = []
+            chosen: set[str] = set()
+            for marker in priorities:
+                chunk = next(
+                    (item for item in self.chunks
+                     if marker.casefold() in item.text.casefold()
+                     and item.chunk_id not in chosen),
+                    None,
+                )
+                if chunk is not None:
+                    chosen.add(chunk.chunk_id)
+                    overview.append(chunk)
+            if overview:
+                return overview[:max(0, top_k)]
         meaningful = [term for term in tokens(query) if term not in _STOPWORDS]
         extra = [
             alias for pattern, alias in _ALIASES if re.search(pattern, query, re.IGNORECASE)
