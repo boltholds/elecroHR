@@ -5,7 +5,51 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas import Assessment, WEIGHTS
+LOCAL_WEIGHTS = {
+    "llm_fundamentals": 25,
+    "rag_retrieval": 35,
+    "evaluation_quality": 20,
+    "deployment_agents": 20,
+}
+LocalCriterion = Literal[
+    "llm_fundamentals", "rag_retrieval", "evaluation_quality", "deployment_agents",
+]
+
+
+class LocalCriterionScore(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    criterion: LocalCriterion
+    score: int = Field(ge=0, strict=True)
+    max_score: int = Field(gt=0, strict=True)
+    evidence: list[str]
+    assessed: bool
+    explanation: str
+
+    @model_validator(mode="after")
+    def validate_score(self) -> "LocalCriterionScore":
+        if self.max_score != LOCAL_WEIGHTS[self.criterion] or self.score > self.max_score:
+            raise ValueError("Invalid local criterion weight or score")
+        if not self.assessed and (self.score != 0 or self.evidence):
+            raise ValueError("Unassessed criterion must have zero score and no evidence")
+        if self.assessed and not any(text.strip() for text in self.evidence):
+            raise ValueError("Assessed criterion must have candidate evidence")
+        return self
+
+
+class LocalAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    criteria: list[LocalCriterionScore]
+    strengths: list[str]
+    weaknesses: list[str]
+    summary: str
+
+    @model_validator(mode="after")
+    def validate_criteria(self) -> "LocalAssessment":
+        keys = [item.criterion for item in self.criteria]
+        if len(keys) != len(LOCAL_WEIGHTS) or set(keys) != set(LOCAL_WEIGHTS):
+            raise ValueError("Exactly the four local evaluation criteria are required")
+        return self
+
 
 
 class LocalReport(BaseModel):
@@ -14,7 +58,7 @@ class LocalReport(BaseModel):
     status: Literal["completed"] = "completed"
     score: int = Field(ge=0, le=100)
     max_score: Literal[100] = 100
-    assessment: Assessment
+    assessment: LocalAssessment
     unassessed_criteria: list[str]
     assessment_complete: bool
     recommendation: Literal["manual_review"] = "manual_review"
@@ -22,7 +66,7 @@ class LocalReport(BaseModel):
 
     @model_validator(mode="after")
     def validate_totals(self) -> "LocalReport":
-        assert sum(WEIGHTS.values()) == 100
+        assert sum(LOCAL_WEIGHTS.values()) == 100
         if self.score != sum(c.score for c in self.assessment.criteria):
             raise ValueError("Score must match criterion total")
         absent = [c.criterion for c in self.assessment.criteria if not c.assessed]
@@ -74,22 +118,20 @@ class EndpointDetector:
         return False, b""
 
 
-def empty_assessment(reason: str) -> Assessment:
-    from app.schemas import CriterionScore
-
-    return Assessment(
+def empty_assessment(reason: str) -> LocalAssessment:
+    return LocalAssessment(
         criteria=[
-            CriterionScore(
+            LocalCriterionScore(
                 criterion=name, max_score=weight, score=0,
                 assessed=False, evidence=[], explanation=reason,
             )
-            for name, weight in WEIGHTS.items()
+            for name, weight in LOCAL_WEIGHTS.items()
         ],
         strengths=[], weaknesses=[], summary=reason,
     )
 
 
-def make_report(session_id: str, assessment: Assessment, method: Literal["ollama", "insufficient_data"]) -> LocalReport:
+def make_report(session_id: str, assessment: LocalAssessment, method: Literal["ollama", "insufficient_data"]) -> LocalReport:
     missing = [item.criterion for item in assessment.criteria if not item.assessed]
     return LocalReport(
         session_id=session_id, score=sum(item.score for item in assessment.criteria),
