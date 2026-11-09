@@ -73,3 +73,17 @@ async def test_scoring_uses_only_answers_from_screening(tmp_path, monkeypatch):
     saved = json.loads((tmp_path / "scored.json").read_text(encoding="utf-8"))
     assert saved["profile"]["confirmed"] is False
     assert saved["report"]["score"] == 0
+
+
+async def test_screening_questions_are_included_in_scoring_context():
+    async with httpx.AsyncClient() as client:
+        interview = Interview(
+            "questions", LocalSettings(_env_file=None), FakeAudio(), object(), client
+        )
+        interview.ws = FakeWS()
+        interview.dialogue.phase = Phase.screening
+        await interview.speak_text("Расскажите, как вы оптимизировали SQL-запросы.")
+        await interview.on_playback_done(interview.generation)
+        assert interview.screening_transcript == [
+            {"role": "agent", "text": "Расскажите, как вы оптимизировали SQL-запросы."}
+        ]
