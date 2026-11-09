@@ -155,3 +155,37 @@ def test_cannot_infer_name_from_unrelated_sentence():
     assert verified_name("Никита", "Меня зовут Никита", "Я хочу работать с Python") == ""
     assert verified_name("Александр", "Меня зовут Александр", "Меня зовут Александр") == "Александр"
     assert verified_name("123", "123", "123") == ""
+
+
+async def test_first_and_next_questions_are_from_source_bank():
+    from local_voice.question_bank import QuestionBank, parse_questions
+
+    markdown = (
+        "## 01. Основы LLM\n"
+        "### RAG-Q001 — Что такое большая языковая модель?\n\n"
+        "### RAG-Q002 — В чём отличие RAG от fine-tuning?\n\n"
+        "### RAG-Q003 — Как оценить качество retrieval?\n"
+    )
+    bank = QuestionBank(parse_questions(markdown))
+    dialogue = HRDialogue(
+        phase=Phase.confirmation,
+        candidate_name="Антон", preferred_name="Антон", form="ты",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(ollama_handler)) as client:
+        first = await dialogue.respond(
+            "Да", [], client, LocalSettings(_env_file=None), FakeRAG(), bank
+        )
+        assert first.question_id in bank.by_id
+        assert bank.by_id[first.question_id].text in first.text
+        assert dialogue.asked_question_ids == []
+        dialogue.playback_confirmed()
+        assert dialogue.asked_question_ids == [first.question_id]
+        another = await dialogue.respond(
+            "Я проектировал RAG retrieval", [], client,
+            LocalSettings(_env_file=None), FakeRAG(), bank
+        )
+        assert another.question_id in bank.by_id
+        assert another.question_id != first.question_id
+        assert another.text == bank.by_id[another.question_id].text
+        dialogue.playback_confirmed()
+        assert len(dialogue.asked_question_ids) == 2
