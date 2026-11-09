@@ -10,6 +10,9 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 
+SPEECH_CONTRACT_VERSION = "validated-json-v2"
+
+
 class CandidateReply(BaseModel):
     model_config = ConfigDict(extra="forbid")
     answer: str = Field(min_length=1, max_length=650)
@@ -23,6 +26,9 @@ _UNSAFE_META = re.compile(
     r"(?:мне|нам)\s+(?:нужно|надо|следует)\s+(?:ответить|использовать|найти|проверить|посмотреть)|"
     r"кандидат\s+(?:спрашивает|запросил|задаёт|сказал)|"
     r"в\s+результатах\s+(?:rag|поиска)|"
+    r"в\s+предоставленных\s+данных\s+есть\s+несколько\s+чанков|"
+    r"(?:я\s+)?вижу,\s+что|"
+    r"(?:так,\s*)?нужно\s+(?:понять|найти|выбрать|проверить)\s+(?:что|какие|информацию)|"
     r"(?:я\s+)?вижу,\s+что\s+(?:вакансия|в\s+одном\s+из\s+чанков)|"
     r"(?:хорошо,\s*)?мне\s+нужно\s+ответить|"
     r"нужно\s+использовать\s+только\s+факты|"

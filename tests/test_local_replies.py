@@ -162,3 +162,56 @@ async def test_interview_never_sends_model_reasoning_to_websocket_or_tts():
     assert audio.spoken == text_messages
     assert all("Сначала посмотрю" not in t for t in text_messages)
     assert all("кандидата" not in t for t in text_messages)
+
+
+
+async def test_speak_text_blocks_reasoning_before_tts_or_websocket():
+    from local_voice.dialogue import HRDialogue
+    from local_voice.server import Interview
+    from local_voice.settings import LocalSettings
+
+    class Audio:
+        spoken = []
+
+        def synthesize(self, text):
+            self.spoken.append(text)
+            return b"\x00\x00"
+
+    class Socket:
+        def __init__(self):
+            self.events = []
+
+        async def send_json(self, data):
+            self.events.append(data)
+
+        async def send_bytes(self, data):
+            self.events.append(data)
+
+    audio = Audio()
+    sock = Socket()
+    async with httpx.AsyncClient() as client:
+        session = Interview(
+            session_id="egress", settings=LocalSettings(_env_file=None),
+            audio=audio, rag=object(), http=client,
+            dialogue=HRDialogue(),
+        )
+        session.ws = sock
+        await session.speak_text(
+            "Хорошо, мне нужно ответить на запрос кандидата. "
+            "Сначала посмотрю на результаты RAG."
+        )
+    public = [e["text"] for e in sock.events
+              if isinstance(e, dict) and e.get("type") == "agent_text"]
+    assert public == [safe_reply_fallback(False)]
+    assert audio.spoken == public
+    assert not any("Сначала" in line or "RAG" in line for line in public)
+
+
+@pytest.mark.parametrize("bad", [
+    "В предоставленных данных есть несколько чанков из vacancy.md.",
+    'Вижу, что компания "Сигма Лаб" вымышленная для демонстрации.',
+    "Так, нужно выбрать информацию из нескольких блоков.",
+])
+def test_additional_rag_self_narration_is_blocked(bad):
+    with pytest.raises(ValueError):
+        candidate_facing_text(bad)

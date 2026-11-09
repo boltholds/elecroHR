@@ -22,7 +22,8 @@ from local_voice.dialogue import GREETING, HRDialogue, Phase
 from local_voice.question_bank import QuestionBank
 from local_voice.vacancy import VacancyRAG
 from local_voice.scoring import score_transcript
-from local_voice.replies import generate_candidate_reply, safe_reply_fallback
+from local_voice.replies import (SPEECH_CONTRACT_VERSION, candidate_facing_text,
+                                 generate_candidate_reply, safe_reply_fallback)
 from local_voice.settings import LocalSettings
 
 LOG = logging.getLogger(__name__)
@@ -84,6 +85,13 @@ class Interview:
         await self.speak_text(GREETING)
 
     async def speak_text(self, text: str) -> None:
+        # Final safety boundary for ALL speech paths, including direct stage
+        # turns. No transcript text or audio is emitted until validated.
+        try:
+            text = candidate_facing_text(text)
+        except ValueError:
+            LOG.warning("Refused non-candidate-facing text at TTS boundary")
+            text = safe_reply_fallback(False)
         self.generation += 1
         ident = self.generation
         self.pending_text = ""
@@ -193,8 +201,14 @@ class Interview:
             await self.set_state("listening")
 
     async def synthesize_sentence(self, sentence: str, ident: int) -> None:
+        # Legacy helper retained for compatibility, still subject to speech gate.
         if not sentence.strip():
             return
+        try:
+            sentence = candidate_facing_text(sentence)
+        except ValueError:
+            LOG.warning("Refused non-candidate-facing legacy TTS sentence")
+            sentence = safe_reply_fallback(False)
         pcm = await asyncio.to_thread(self.audio.synthesize, sentence)
         if ident != self.generation or self.state != "speaking":
             return
@@ -273,7 +287,8 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, str | int]:
         return {"status": "ok", "mode": "local",
-                "questions": len(app.state.questions.questions)}
+                "questions": len(app.state.questions.questions),
+                "speech_contract": SPEECH_CONTRACT_VERSION}
 
     @app.post("/sessions", status_code=201)
     async def create_session(payload: Consent) -> dict[str, str]:
