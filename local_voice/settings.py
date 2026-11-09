@@ -11,8 +11,7 @@ class LocalSettings(BaseSettings):
     ollama_base_url: str = "http://ollama:11434"
     llm_model: str = "qwen3:4b"
     whisper_path: Path = Path("/models/whisper/small")
-    tts_path: Path = Path("/models/tts/v5_6_ru.pt")
-    tts_speaker: str = "xenia"
+    tts_base_url: str = "http://tts:8011"
     data_dir: Path = Path("/data/local_voice")
     knowledge_dir: Path = Path("/srv/knowledge")
     vad_threshold: float = Field(default=0.50, ge=0, le=1)
