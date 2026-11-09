@@ -28,6 +28,40 @@ services:
     networks: [local]
     restart: "no"
 
+  tts-model-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
+    command: ["python", "-m", "tts_service.prepare_models"]
+    environment:
+      HF_HOME: /models/huggingface
+    volumes:
+      - tts_models:/models/huggingface
+    networks: [local]
+    restart: "no"
+
+  tts:
+    build:
+      context: .
+      dockerfile: Dockerfile.tts
+    depends_on:
+      tts-model-init:
+        condition: service_completed_successfully
+    environment:
+      HF_HOME: /models/huggingface
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+    volumes:
+      - tts_models:/models/huggingface:ro
+    networks: [local]
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/health/ready', timeout=5).read()"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 240s
+
   model-init:
     build:
       context: .
@@ -50,12 +84,13 @@ services:
         condition: service_completed_successfully
       model-init:
         condition: service_completed_successfully
+      tts:
+        condition: service_healthy
     environment:
       OLLAMA_BASE_URL: http://ollama:11434
       LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3:4b}
       WHISPER_PATH: /models/whisper/small
-      TTS_PATH: /models/tts/v5_6_ru.pt
-      TTS_SPEAKER: ${LOCAL_TTS_SPEAKER:-xenia}
+      TTS_BASE_URL: http://tts:8011
       KNOWLEDGE_DIR: /srv/knowledge
       DATA_DIR: /data/local_voice
       HF_HOME: /models/huggingface
@@ -76,4 +111,5 @@ networks:
 volumes:
   ollama_data:
   model_data:
+  tts_models:
   interview_data:
