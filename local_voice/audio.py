@@ -17,6 +17,30 @@ def validate_tts_response(response: httpx.Response) -> bytes:
     return pcm
 
 
+def split_tts_text(text: str, max_chars: int = 300) -> list[str]:
+    """Respect the local TTS request limit while keeping words together."""
+    if max_chars < 30:
+        raise ValueError("max_chars must allow at least one short sentence")
+    words = text.split()
+    chunks: list[str] = []
+    current = ""
+    for word in words:
+        if len(word) > max_chars:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.extend(word[i : i + max_chars] for i in range(0, len(word), max_chars))
+            continue
+        if current and len(current) + 1 + len(word) > max_chars:
+            chunks.append(current)
+            current = word
+        else:
+            current = (current + " " + word).strip()
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 class AudioModels:
     def __init__(self, settings: object) -> None:
         import torch
@@ -51,8 +75,14 @@ class AudioModels:
         return " ".join(segment.text.strip() for segment in segments).strip()
 
     def synthesize(self, text: str) -> bytes:
-        response = self._http.post(
-            self.tts_url,
-            json={"text": text, "language": "auto"},
-        )
-        return validate_tts_response(response)
+        segments = split_tts_text(text)
+        if not segments:
+            raise ValueError("Cannot synthesize empty text")
+        outputs: list[bytes] = []
+        for segment in segments:
+            response = self._http.post(
+                self.tts_url,
+                json={"text": segment, "language": "auto"},
+            )
+            outputs.append(validate_tts_response(response))
+        return b"".join(outputs)
