@@ -69,6 +69,26 @@ def render_pcm(model: Any, text: str, language: str, voice: dict[str, str]) -> b
     return (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
 
 
+def load_xtts_checkpoint_readonly(model_path: Path) -> dict[str, Any]:
+    """Read a trusted legacy XTTS checkpoint without Coqui's rewrite attempt.
+
+    coqui-tts 0.28.0's Xtts._load_checkpoint catches UnpicklingError,
+    safely loads the legacy pickle, and then tries torch.save(model.pth)
+    to convert its config. The model volume is intentionally read-only.
+    We need only the model state dict: avoid the write altogether.
+    """
+    import torch
+    from TTS.tts.models.xtts import _legacy_safe_globals
+
+    with _legacy_safe_globals():
+        checkpoint = torch.load(
+            model_path, map_location=torch.device("cpu"), weights_only=True
+        )
+    if not isinstance(checkpoint, dict) or not isinstance(checkpoint.get("model"), dict):
+        raise RuntimeError("Invalid XTTS-v2 checkpoint structure")
+    return checkpoint["model"]
+
+
 def load_xtts(model_dir: Path) -> Any:
     """Load the downloaded, pinned checkpoint without a runtime network request."""
     import torch
@@ -77,21 +97,20 @@ def load_xtts(model_dir: Path) -> Any:
     for name in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
         if not (model_dir / name).is_file():
             raise RuntimeError("XTTS weights unavailable: " + name)
-    # The official XTTS-v2 checkpoint embeds four Coqui config classes.
-    # Keep weights_only=True and allowlist only these known types while
-    # loading the checkpoint. Do not turn off safe loading globally.
-    from TTS.config.shared_configs import BaseDatasetConfig
-    from TTS.tts.configs.xtts_config import XttsConfig
-    from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
+    # Only intercept the legacy XTTS checkpoint loader during construction:
+    # Coqui's built-in conversion writes model.pth, which is read-only.
+    from TTS.tts.models.xtts import Xtts
 
-    with torch.serialization.safe_globals(
-        [XttsConfig, XttsArgs, XttsAudioConfig, BaseDatasetConfig]
-    ):
+    original_loader = Xtts._load_checkpoint
+    Xtts._load_checkpoint = load_xtts_checkpoint_readonly
+    try:
         model = TTS(
             model_path=str(model_dir),
             config_path=str(model_dir / "config.json"),
             progress_bar=False,
         )
+    finally:
+        Xtts._load_checkpoint = original_loader
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     LOG.info("XTTS-v2 model loaded on %s", device)
