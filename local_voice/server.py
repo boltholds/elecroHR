@@ -124,7 +124,10 @@ class Interview:
             return
         utterance = self.pending_text.strip()
         if utterance:
-            self.transcript.append({"role": "agent", "text": utterance})
+            spoken = {"role": "agent", "text": utterance}
+            self.transcript.append(spoken)
+            if self.dialogue.phase == Phase.screening:
+                self.screening_transcript.append(spoken)
         self.pending_text = ""
         self.dialogue.playback_confirmed()
         self.detector.reset()
