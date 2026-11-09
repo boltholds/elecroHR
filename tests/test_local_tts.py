@@ -108,68 +108,83 @@ async def test_xtts_http_api_remains_compatible(monkeypatch):
 
 
 
-def test_xtts_checkpoint_load_has_scoped_safe_globals(monkeypatch, tmp_path: Path):
-    """Exercise the loader without GPU or unpickling a third-party checkpoint."""
+def test_xtts_legacy_loader_is_scoped_and_restored(monkeypatch, tmp_path: Path):
+    """The unsafe flag is active only during trusted XTTS construction."""
     import sys
-    from contextlib import contextmanager
     from types import ModuleType, SimpleNamespace
-
     from tts_service.server import load_xtts
 
-    classes = {}
-    for label in ("XttsConfig", "XttsArgs", "XttsAudioConfig", "BaseDatasetConfig"):
-        classes[label] = type(label, (), {})
+    module_tts = ModuleType("TTS")
+    module_tts.__path__ = []
+    module_api = ModuleType("TTS.api")
+    module_trainer = ModuleType("trainer")
+    module_trainer.__path__ = []
+    module_io = ModuleType("trainer.io")
+    module_io._WEIGHTS_ONLY = True
 
-    packages = (
-        "TTS", "TTS.api", "TTS.tts", "TTS.tts.models",
-        "TTS.tts.models.xtts", "TTS.tts.configs",
-        "TTS.tts.configs.xtts_config", "TTS.config",
-        "TTS.config.shared_configs",
-    )
-    modules = {}
-    for package in packages:
-        mod = ModuleType(package)
-        mod.__path__ = []
-        monkeypatch.setitem(sys.modules, package, mod)
-        modules[package] = mod
-    modules["TTS.tts.configs.xtts_config"].XttsConfig = classes["XttsConfig"]
-    modules["TTS.tts.models.xtts"].XttsArgs = classes["XttsArgs"]
-    modules["TTS.tts.models.xtts"].XttsAudioConfig = classes["XttsAudioConfig"]
-    modules["TTS.config.shared_configs"].BaseDatasetConfig = classes["BaseDatasetConfig"]
-
-    state = {"inside": False, "closed": False}
-
-    @contextmanager
-    def safe_globals(whitelist):
-        assert set(whitelist) == set(classes.values())
-        state["inside"] = True
-        try:
-            yield
-        finally:
-            state["inside"] = False
-            state["closed"] = True
-
-    class MockModel:
+    state = {"observed": None, "restored": None, "moved": False}
+    class FakeModel:
         def to(self, device):
             assert device == "cpu"
+            state["moved"] = True
             return self
 
-    def make_tts(*, model_path, config_path, progress_bar):
-        assert state["inside"]
+    def construct(*, model_path, config_path, progress_bar):
         assert model_path == str(tmp_path)
         assert config_path == str(tmp_path / "config.json")
-        assert progress_bar is False
-        return MockModel()
+        state["observed"] = module_io._WEIGHTS_ONLY
+        return FakeModel()
 
-    modules["TTS.api"].TTS = make_tts
+    module_api.TTS = construct
+    module_trainer.io = module_io
+    for name, mod in (
+        ("TTS", module_tts), ("TTS.api", module_api),
+        ("trainer", module_trainer), ("trainer.io", module_io)
+    ):
+        monkeypatch.setitem(sys.modules, name, mod)
     fake_torch = ModuleType("torch")
     fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
-    fake_torch.serialization = SimpleNamespace(safe_globals=safe_globals)
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    for name in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
-        (tmp_path / name).write_bytes(b"mock")
+    for filename in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
+        (tmp_path / filename).write_bytes(b"dummy")
 
-    loaded = load_xtts(tmp_path)
-    assert isinstance(loaded, MockModel)
-    assert state == {"inside": False, "closed": True}
+    assert isinstance(load_xtts(tmp_path), FakeModel)
+    assert state["observed"] is False
+    assert module_io._WEIGHTS_ONLY is True
+    assert state["moved"]
+
+
+def test_xtts_legacy_loader_flag_restored_on_failure(monkeypatch, tmp_path: Path):
+    import sys
+    from types import ModuleType, SimpleNamespace
+    from tts_service.server import load_xtts
+
+    package = ModuleType("TTS")
+    package.__path__ = []
+    api = ModuleType("TTS.api")
+    trainer = ModuleType("trainer")
+    trainer.__path__ = []
+    trainer_io = ModuleType("trainer.io")
+    trainer_io._WEIGHTS_ONLY = True
+
+    def fail(**kwargs):
+        assert trainer_io._WEIGHTS_ONLY is False
+        raise RuntimeError("simulated load error")
+
+    api.TTS = fail
+    trainer.io = trainer_io
+    for name, value in (
+        ("TTS", package), ("TTS.api", api),
+        ("trainer", trainer), ("trainer.io", trainer_io),
+    ):
+        monkeypatch.setitem(sys.modules, name, value)
+    torch = ModuleType("torch")
+    torch.cuda = SimpleNamespace(is_available=lambda: False)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    for name in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
+        (tmp_path / name).write_bytes(b"dummy")
+    with pytest.raises(RuntimeError, match="simulated"):
+        load_xtts(tmp_path)
+    assert trainer_io._WEIGHTS_ONLY is True
