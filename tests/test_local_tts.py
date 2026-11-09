@@ -105,3 +105,71 @@ async def test_xtts_http_api_remains_compatible(monkeypatch):
             assert response.headers["x-sample-rate"] == "24000"
             assert response.headers["x-tts-language"] == "ru"
             assert model.calls[-1]["speaker"] == "Asya Anara"
+
+
+
+def test_xtts_checkpoint_load_has_scoped_safe_globals(monkeypatch, tmp_path: Path):
+    """Exercise the loader without GPU or unpickling a third-party checkpoint."""
+    import sys
+    from contextlib import contextmanager
+    from types import ModuleType, SimpleNamespace
+
+    from tts_service.server import load_xtts
+
+    classes = {}
+    for label in ("XttsConfig", "XttsArgs", "XttsAudioConfig", "BaseDatasetConfig"):
+        classes[label] = type(label, (), {})
+
+    packages = (
+        "TTS", "TTS.api", "TTS.tts", "TTS.tts.models",
+        "TTS.tts.models.xtts", "TTS.tts.configs",
+        "TTS.tts.configs.xtts_config", "TTS.config",
+        "TTS.config.shared_configs",
+    )
+    modules = {}
+    for package in packages:
+        mod = ModuleType(package)
+        mod.__path__ = []
+        monkeypatch.setitem(sys.modules, package, mod)
+        modules[package] = mod
+    modules["TTS.tts.configs.xtts_config"].XttsConfig = classes["XttsConfig"]
+    modules["TTS.tts.models.xtts"].XttsArgs = classes["XttsArgs"]
+    modules["TTS.tts.models.xtts"].XttsAudioConfig = classes["XttsAudioConfig"]
+    modules["TTS.config.shared_configs"].BaseDatasetConfig = classes["BaseDatasetConfig"]
+
+    state = {"inside": False, "closed": False}
+
+    @contextmanager
+    def safe_globals(whitelist):
+        assert set(whitelist) == set(classes.values())
+        state["inside"] = True
+        try:
+            yield
+        finally:
+            state["inside"] = False
+            state["closed"] = True
+
+    class MockModel:
+        def to(self, device):
+            assert device == "cpu"
+            return self
+
+    def make_tts(*, model_path, config_path, progress_bar):
+        assert state["inside"]
+        assert model_path == str(tmp_path)
+        assert config_path == str(tmp_path / "config.json")
+        assert progress_bar is False
+        return MockModel()
+
+    modules["TTS.api"].TTS = make_tts
+    fake_torch = ModuleType("torch")
+    fake_torch.cuda = SimpleNamespace(is_available=lambda: False)
+    fake_torch.serialization = SimpleNamespace(safe_globals=safe_globals)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+    for name in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
+        (tmp_path / name).write_bytes(b"mock")
+
+    loaded = load_xtts(tmp_path)
+    assert isinstance(loaded, MockModel)
+    assert state == {"inside": False, "closed": True}
