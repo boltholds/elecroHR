@@ -350,7 +350,7 @@ class HRDialogue:
                 question_id=selected.question_id,
                 sources=[{"source": selected.source, "chunk_id": selected.question_id}],
             )
-        focus = decision.focus if decision.focus in WEIGHTS else ""
+        focus = decision.focus if decision.focus in LOCAL_WEIGHTS else ""
         if not focus:
             focus = next((x for x in LOCAL_WEIGHTS if x not in self.asked), "deployment_agents")
         self.pending_focus = focus
