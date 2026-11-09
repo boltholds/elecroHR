@@ -209,10 +209,12 @@ class HRDialogue:
             evidence = extracted.evidence.strip()
             if (
                 extracted.form == "unknown"
-                or not evidence or evidence.casefold() not in utterance.casefold()
+                or not evidence
+                or evidence.casefold() not in utterance.casefold()
+                or not re.search(r"\b" + re.escape(extracted.form) + r"\b", evidence, re.I)
             ):
                 return Turn(text="Уточните, пожалуйста, как вам комфортнее: на «вы» или на «ты»?")
-            alias = verified_name(extracted.preferred_name, evidence, utterance)
+            alias = verified_name(extracted.preferred_name, utterance, utterance)
             if not alias:
                 alias = self.candidate_name
             self.preferred_name = alias
