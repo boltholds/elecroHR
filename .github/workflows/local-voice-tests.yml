@@ -1,0 +1,22 @@
+name: Local voice core tests
+on:
+  push:
+    branches: [feat/local-voice-docker-mvp]
+  pull_request:
+    paths:
+      - "local_voice/**"
+      - "tests/test_local_*.py"
+      - "requirements-local.txt"
+      - "compose*.yaml"
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight test dependencies
+        run: pip install "fastapi>=0.115,<1" "pydantic>=2.10,<3" "pydantic-settings>=2.6,<3" "httpx>=0.28,<1" "numpy>=1.26,<3" "pytest>=8,<10" "pytest-asyncio>=0.25,<2"
+      - name: Validate local code
+        run: python -m compileall -q local_voice && pytest -q tests/test_local_core.py tests/test_local_scoring.py

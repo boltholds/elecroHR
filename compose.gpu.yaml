@@ -1,0 +1,10 @@
+# NVIDIA Docker GPU support; combine with compose.yaml.
+services:
+  ollama:
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

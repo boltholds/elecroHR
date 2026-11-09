@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>elecroHR · Локальное интервью</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header><span class="mark">E</span><div><h1>elecroHR</h1><p>Локальный голосовой рекрутер · STT / Qwen3 / TTS</p></div></header>
+    <section class="panel call">
+      <div id="pulse" class="pulse"><span>AI</span></div>
+      <h2>Тестовое HR-интервью</h2>
+      <p id="status">Ожидает звонка</p>
+      <p class="note">Для минимального эха используйте наушники. Данные разговора остаются на этом компьютере.</p>
+      <label class="consent"><input id="consent" type="checkbox"> Согласен на локальное сохранение текстовой расшифровки и автоматический анализ ответов для демонстрации.</label>
+      <div class="actions">
+        <button id="start">Начать интервью</button>
+        <button id="mute" disabled>Выключить микрофон</button>
+        <button id="end" class="danger" disabled>Завершить</button>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><h3>Диалог</h3><span id="rag">RAG не использован</span></div>
+      <div class="transcript" id="transcript" aria-live="polite"><p class="empty">Здесь появятся реплики после начала разговора.</p></div>
+    </section>
+    <section id="result" class="panel" hidden><h3>Отчёт для HR</h3><pre id="report"></pre></section>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
