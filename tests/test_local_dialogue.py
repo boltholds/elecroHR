@@ -58,7 +58,7 @@ def ollama_handler(request: httpx.Request) -> httpx.Response:
             }
         else:
             answer = {
-                "action": "ask_question", "focus": "postgresql_sql", "query": "",
+                "action": "ask_question", "focus": "rag_retrieval", "query": "",
                 "instruction": "Попроси пример SQL индекса.",
             }
     else:
@@ -109,7 +109,7 @@ async def test_complete_introduction_then_react_and_rag():
             "Я работал с FastAPI", transcript, client, settings, rag
         )
         assert question.instruction
-        assert dialogue.pending_focus == "postgresql_sql"
+        assert dialogue.pending_focus == "rag_retrieval"
         dialogue.playback_interrupted()
         assert dialogue.pending_focus == ""
 
