@@ -3,7 +3,20 @@
 Audio transport: signed little-endian PCM16; 16 kHz input, 24 kHz output.
 Only one interview is active, so the stateful Silero VAD is never shared.
 """
+from pathlib import Path
+from typing import Any
+
 import numpy as np
+
+
+def load_tts_model(torch: Any, model_path: Path) -> Any:
+    """Keep the loaded object: Silero's custom .to() can return None."""
+    model = torch.package.PackageImporter(str(model_path)).load_pickle("tts_models", "model")
+    if model is None or not callable(getattr(model, "apply_tts", None)):
+        raise RuntimeError("Silero TTS package did not contain a usable model")
+    # Do not chain .to(): some versions of Silero mutate in-place and return None.
+    model.to(torch.device("cpu"))
+    return model
 
 
 class AudioModels:
@@ -16,10 +29,11 @@ class AudioModels:
         self._torch = torch
         self.vad = load_silero_vad(onnx=True)
         self.whisper = WhisperModel(str(settings.whisper_path), device="cpu", compute_type="int8")
-        self.tts = torch.package.PackageImporter(str(settings.tts_path)).load_pickle(
-            "tts_models", "model"
-        ).to(torch.device("cpu"))
+        self.tts = load_tts_model(torch, settings.tts_path)
         self.speaker = settings.tts_speaker
+        # Fail during startup rather than after the candidate has connected.
+        if not self.synthesize("Здравствуйте!"):
+            raise RuntimeError("Silero TTS warmup returned empty audio")
 
     def reset_vad(self) -> None:
         self.vad.reset_states()
