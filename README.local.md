@@ -1,131 +1,115 @@
-# elecroHR — локальное голосовое HR-интервью (Docker, RU/EN)
+# elecroHR — локальное голосовое HR-интервью (XTTS-v2, RU/EN)
 
-Независимый от GPT-Live/SIP браузерный режим: микрофон → Silero VAD →
-faster-whisper → Ollama/Qwen3 → Chatterbox Multilingual V3 → динамики.
+Браузерный MVP: микрофон → Silero VAD → faster-whisper → Ollama/Qwen3 →
+ReAct + RAG → Coqui XTTS-v2 → динамики. Это локальный браузерный разговор;
+старый backend GPT-Live/SIP существует отдельно и не меняется.
 
-Это браузерное голосовое интервью, не звонок на мобильный телефон.
-В старом backend облачный SIP/GPT-Live остаётся без изменений.
+## Голосовая архитектура
 
-## Что изменилось
+XTTS-v2 заменяет Chatterbox Multilingual в отдельном Docker-сервисе
+`tts`, сохраняя внутренний HTTP API POST /synthesize и выход 24 kHz,
+mono PCM16. Браузерный Web Audio и FastAPI-клиент не требуют изменений.
+Сервис поддерживает язык ru/en, определяя его по тексту (автоматический
+выбор можно переопределить в API).
 
-- Мультиязычный TTS: Chatterbox Multilingual V3, русский и английский
-  в одной модели, отдельный контейнер `tts`. Определение языка
-  выполняется по каждому фрагменту текста. Русские фразы с латинскими
-  названиями технологий обычно синтезируются как русский текст.
-- 119 вопросов из файла: `knowledge/faq.md` содержит вопросы
-  `RAG-Q001`–`RAG-Q119`, с исходными разделами и тегами.
-  В файле нет эталонных ответов, каждый вопрос индексируется отдельно.
-- ReAct выбирает новый вопрос из банка, уточнение предыдущего ответа,
-  поиск фактов о вакансии или завершение. ID вопросов сохраняются.
-- Вступление: приветствие → удобство разговора → имя →
-  обращение «вы»/«ты» → подтверждение → технический вопрос из банка.
-- Отдельный RAG по вакансии: `knowledge/vacancy.md` используется
-  для ответов об условиях работы. `faq.md` для таких ответов исключён.
-- Скоринг по теме LLM/RAG: основы LLM (25), RAG/retrieval (35),
-  оценка качества (20), развёртывание/агенты (20). Баллы обосновываются
-  дословными ответами кандидата. Финальное решение принимает HR.
+По умолчанию используется встроенный голос `Asya Anara`.
+**Это не гарантия русского акцента.** Если произношение не нравится,
+поместите разрешённую для использования запись носителя русского языка
+в `voices/reference.wav` (обычный WAV с чистой речью, без музыки)
+и укажите в локальном `.env`:
 
-## Запуск: RTX 4070 Ti, Windows / Docker Desktop WSL2
+    XTTS_SPEAKER_WAV=/voices/reference.wav
 
-Docker Desktop должен иметь доступ к видеокарте:
+В таком режиме используется референс для обеих языковых версий голоса.
+Не используйте запись чужого голоса без согласия. Для встроенного голоса
+оставьте `XTTS_SPEAKER_WAV=` пустым, а в `XTTS_SPEAKER` можно выбрать
+другое доступное имя из опубликованного Coqui списка.
 
-    docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+**Лицензия:** веса `coqui/XTTS-v2` распространяются по
+Coqui Public Model License 1.0.0 (CPML):
+https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt
+Она разрешает некоммерческое использование, включая определённые виды
+тестирования и исследований; не разрешает стандартную коммерческую
+эксплуатацию и коммерческое использование выходов модели. Перед выпуском
+платного elecroHR понадобится другая лицензия или другая TTS-модель.
 
-В папке проекта:
+## Запуск на Windows / RTX 4070 Ti
+
+Перед первым запуском проверьте Docker Desktop и доступ к NVIDIA GPU.
+Команды PowerShell в корне проекта:
 
     git switch feat/local-voice-docker-mvp
     git pull origin feat/local-voice-docker-mvp
-    docker-compose -f compose.yaml -f compose.gpu.yaml up -d --build
-    docker-compose -f compose.yaml -f compose.gpu.yaml logs -f tts app
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml up -d --build
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml ps -a
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml logs -f tts-model-init tts app
 
-Открыть http://localhost:8000. Рекомендуются наушники.
+Браузер: http://127.0.0.1:8000
+Проверка API: http://127.0.0.1:8000/health
+Рекомендуются наушники для уменьшения эха.
 
-Первый запуск требует интернета для Docker-образов, исходников Chatterbox
-на зафиксированной ревизии GitHub и весов моделей. CUDA PyTorch-образ
-большой; проверьте свободное место Docker/WSL. Веса сохраняются в
-persistent volumes, при последующих запусках не скачиваются заново.
+Поскольку базовый Docker-образ XTTS использует PyTorch 2.5.1,
+при первой сборке он скачивается дополнительно к ранее собранному
+Chatterbox-контейнеру. Проверьте свободное место в Docker/WSL:
+вес модели XTTS около 2 ГБ, плюс несколько гигабайт у Docker-образа.
+Новый TTS сохраняет веса в отдельной подпапке старого volume
+`tts_models`. Уже загруженные Qwen3 и Whisper не удаляются.
 
-Сервисы:
-- ollama и ollama-init: Qwen3 4B, RTX 4070 Ti.
-- model-init: загрузка Whisper Small (CPU).
-- tts-model-init: загрузка Chatterbox Multilingual V3.
-- tts: отдельный CUDA TTS, внутренний HTTP API (без публичного порта).
-- app: FastAPI + WebSocket + UI + STT/VAD/RAG/scoring.
+После запуска первый тест:
 
-Ollama и Chatterbox используют общую RTX 4070 Ti 12 ГБ. При OOM
-понадобится уменьшать контекст и/или переносить TTS на CPU (медленно).
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml exec -T tts python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8011/health/ready').read().decode())"
 
-Полезная диагностика:
-
-    docker-compose -f compose.yaml -f compose.gpu.yaml ps
-    docker-compose -f compose.yaml -f compose.gpu.yaml logs -f tts
-    docker-compose -f compose.yaml -f compose.gpu.yaml exec ollama ollama ps
-
-GET http://localhost:8000/health показывает размер question bank.
-Интервью и отчёты хранятся в Docker volume `interview_data`.
-
-## Диалоговая система
-
-Стадии: availability → name → address → confirmation → screening → finished.
-
-На этапе screening ReAct выдаёт запрос, затем backend выбирает
-подходящий вопрос из `knowledge/faq.md` и исключает уже заданные ID.
-В UI появляется ID вопроса. При необходимости агент задаёт один
-уточняющий вопрос по предыдущему ответу. Вопросы основного скрининга
-сохраняют формулировки из исходного файла.
-
-После завершения скоринг получает техническую часть диалога.
-Файл вопросов не содержит ответов, поэтому оценка показывает
-наблюдаемую глубину объяснений, а не подтверждение эталонной правильности.
-
-## Ограничения
-
-- Голосовой end-to-end, GPU-сборка Chatterbox и задержка не проверены
-  автоматически на вашем компьютере. CI проверяет код и Compose.
-- Обе модели на общей видеокарте могут расходовать VRAM одновременно.
-- Локальные транскрипты сохраняются в нешифрованном JSON. Для реальных
-  кандидатов потребуются отдельные меры безопасности и хранения.
-- Chatterbox — архивированный исследовательский проект под лицензией MIT.
-  Используется зафиксированная ревизия для воспроизводимости.
-- Для устойчивого barge-in используйте наушники.
-
-Остановить без удаления моделей:
-
-    docker-compose -f compose.yaml -f compose.gpu.yaml down
-
-Не запускайте down -v, если нужны данные из volumes.
-
-
-## Если tts-model-init показывает Fetching 6 files: 0%
-
-Это означает, что ни один из шести файлов пока не был целиком загружен,
-но крупные веса T3 (~2,14 ГБ) и S3Gen (~1,06 ГБ) могут скачиваться в это
-время. Не удаляйте volumes и не запускайте повторно up, пока не проверите
-состояние текущего процесса:
+### Если контейнеры не запускаются
 
     docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml ps -a
-    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml exec -T tts-model-init du -sh /models/huggingface
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml logs --tail=100 tts-model-init
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml logs --tail=100 tts
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml logs --tail=100 app
 
-Если размер папки растёт, загрузка продолжается. Если контейнер завершился,
-смотрите его последние ошибки:
+Если видны таймауты Hugging Face, переменные
+`HF_HUB_DOWNLOAD_TIMEOUT`, `HF_HUB_ETAG_TIMEOUT` и необязательный
+`HF_TOKEN` можно задать в `.env`, созданном из `.env.local.example`.
+Никогда не отправляйте токен в логи или чаты. Не удаляйте volumes:
+Hugging Face может использовать кеш частичной загрузки.
 
-    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml logs --tail=120 tts-model-init
+CUDA и Ollama используют одну RTX 4070 Ti с 12 ГБ VRAM.
+При ошибке out-of-memory нужно уменьшать загрузку LLM или менять
+политику распределения GPU. Задержки и расход VRAM потребуют измерения
+на конкретной машине.
 
-Если Hugging Face возвращает rate limit или не отвечает, в Windows
-PowerShell можно создать локальный .env из .env.local.example. При
-необходимости укажите в .env собственный HF_TOKEN с разрешением read.
-Файл .env исключён из Git; не отправляйте токен в логи или в чат.
+## Интервью, ReAct и RAG
 
-    Copy-Item .env.local.example .env
+Сценарий: availability → name → address → confirmation → screening →
+finished. HR сам начинает приветствие, уточняет имя и обращение,
+подтверждает их, после чего задаёт вопросы.
 
-HF_HUB_DOWNLOAD_TIMEOUT и HF_HUB_ETAG_TIMEOUT в Compose увеличены по
-умолчанию. Если видны сетевые ошибки именно hf-xet, попробуйте поменять
-HF_HUB_DISABLE_XET=1 в .env и перезапустить только подготовку моделей.
-Это запасной вариант, который может работать медленнее.
+`knowledge/faq.md` содержит 119 вопросов с идентификаторами RAG-Q001 ...
+RAG-Q119. `local_voice/question_bank.py` индексирует по BM25 каждый
+вопрос с разделом и тегами; уже озвученные ID исключаются.
+ReAct выбирает ask_question, follow_up, search_vacancy либо
+end_interview. Факты о работодателе берутся только из
+`knowledge/vacancy.md`, а не из списка вопросов.
 
-Проверка доступности Hugging Face из работающего контейнера:
+Скоринг после звонка производится по техническим ответам и критериям
+LLM (25), RAG/retrieval (35), evaluation (20), deployment/agents (20).
+Для выставления баллов необходимы точные цитаты кандидата.
+Файл вопросов не содержит эталонных ответов; оценка требует проверки HR.
 
-    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml exec -T tts-model-init python -c "import urllib.request; print(urllib.request.urlopen('https://huggingface.co', timeout=20).status)"
+## Границы MVP
 
-После успешной подготовки tts-model-init должен выйти с кодом 0, затем
-стартует TTS, и только после его healthcheck поднимется app на порту 8000.
+- CI тестирует Python-контракты, TTS API и Docker Compose, но не
+  скачивает веса и не запускает XTTS на RTX 4070 Ti.
+- Во время загрузки моделей требуется сеть; после успешной подготовки
+  инференс выполняется локально.
+- Текст диалога сохраняется в Docker volume `interview_data` в JSON.
+  Для реальных кандидатов нужны меры защиты, ограничения хранения
+  и разграничение доступа.
+- Whisper пока настроен на распознавание русского языка, даже
+  если TTS способен говорить на английском. Полностью двуязычный
+  диалог требует дальнейшей настройки STT.
+
+Остановить, не удаляя веса:
+
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml down
+
+Не используйте down -v, если хотите сохранить модели и интервью.
