@@ -76,6 +76,8 @@ class Interview:
         await self.send({"type": "state", "state": state})
 
     async def greet(self) -> None:
+        if self.questions is not None:
+            await self.send({"type": "question_bank", "total": len(self.questions.questions)})
         await self.send({"type": "dialogue", "profile": self.dialogue.public_view()})
         await self.speak_text(GREETING)
 
@@ -280,7 +282,10 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
             app.state.sessions = {}
             app.state.active_id = ""
             app.state.registry_lock = asyncio.Lock()
-            yield
+            try:
+                yield
+            finally:
+                await asyncio.to_thread(audio.close)
 
     app = FastAPI(title="elecroHR Local Voice", lifespan=lifespan)
     app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
@@ -290,8 +295,9 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
         return FileResponse(STATIC / "index.html")
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "mode": "local"}
+    async def health() -> dict[str, str | int]:
+        return {"status": "ok", "mode": "local",
+                "questions": len(app.state.questions.questions)}
 
     @app.post("/sessions", status_code=201)
     async def create_session(payload: Consent) -> dict[str, str]:
