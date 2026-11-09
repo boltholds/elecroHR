@@ -24,7 +24,7 @@ services:
       OLLAMA_HOST: http://ollama:11434
       LLM_MODEL: ${LOCAL_LLM_MODEL:-qwen3:4b}
     entrypoint: ["/bin/sh", "-c"]
-    command: 'ollama show "$$LLM_MODEL" >/dev/null 2>&1 || ollama pull "$$LLM_MODEL"'
+    command: ['ollama show "$LLM_MODEL" >/dev/null 2>&1 || ollama pull "$LLM_MODEL"']
     networks: [local]
     restart: "no"
 
