@@ -19,6 +19,7 @@ from app.rag import RAGService
 from local_voice.audio import AudioModels
 from local_voice.core import EndpointDetector, LocalReport, empty_assessment, make_report
 from local_voice.dialogue import GREETING, HRDialogue, Phase
+from local_voice.question_bank import QuestionBank
 from local_voice.scoring import score_transcript
 from local_voice.settings import LocalSettings
 
@@ -46,6 +47,7 @@ class Interview:
     audio: AudioModels
     rag: RAGService
     http: httpx.AsyncClient
+    questions: QuestionBank | None = None
     transcript: list[dict[str, str]] = field(default_factory=list)
     screening_transcript: list[dict[str, str]] = field(default_factory=list)
     dialogue: HRDialogue = field(default_factory=HRDialogue)
@@ -148,13 +150,16 @@ class Interview:
                 self.screening_transcript.append({"role": "candidate", "text": text})
             await self.send({"type": "candidate_text", "text": text})
             plan = await self.dialogue.respond(
-                text, self.transcript, self.http, self.settings, self.rag
+                text, self.transcript, self.http, self.settings, self.rag,
+                self.questions,
             )
             if self.state != "thinking":
                 return
             await self.send({"type": "dialogue", "profile": self.dialogue.public_view()})
             if plan.sources:
                 await self.send({"type": "rag", "sources": plan.sources})
+            if plan.question_id:
+                await self.send({"type": "question", "question_id": plan.question_id})
             if plan.text:
                 await self.speak_text(plan.text)
                 return
@@ -242,6 +247,7 @@ class Interview:
             data = json.dumps(
                 {"transcript": self.transcript, "profile": self.dialogue.public_view(),
                  "actions": self.dialogue.actions,
+                 "questions_asked": self.dialogue.asked_question_ids,
                  "report": self.report.model_dump(mode="json")},
                 ensure_ascii=False, indent=2,
             )
@@ -264,9 +270,13 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         audio = await asyncio.to_thread(AudioModels, config)
-        rag = await RAGService.load(config.knowledge_dir)
+        rag = await RAGService.load(
+            config.knowledge_dir, only_documents=frozenset({"vacancy.md"})
+        )
+        questions = await QuestionBank.load(config.knowledge_dir / "faq.md")
         async with httpx.AsyncClient() as client:
             app.state.audio, app.state.rag, app.state.client = audio, rag, client
+            app.state.questions = questions
             app.state.sessions = {}
             app.state.active_id = ""
             app.state.registry_lock = asyncio.Lock()
@@ -294,6 +304,7 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
             sid = uuid4().hex
             session = Interview(
                 sid, config, app.state.audio, app.state.rag, app.state.client,
+                questions=app.state.questions,
                 detector=EndpointDetector(
                     threshold=config.vad_threshold, silence_frames=config.silence_frames,
                 ),
