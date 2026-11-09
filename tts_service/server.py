@@ -1,19 +1,23 @@
-"""Isolated Chatterbox Multilingual v3 HTTP synthesis service.
+"""Local XTTS-v2 synthesizer with 24kHz PCM16 wire compatibility.
 
-Loads one ~500M-parameter multilingual model for Russian and English.
-Audio wire format is 24kHz mono signed little-endian PCM16, not a WAV file.
+Russian and English are supported by a single Coqui XTTS-v2 instance.
+A preset voice is the default; optionally mount a consented reference WAV
+under /voices and set XTTS_SPEAKER_WAV to that specific file.
 """
 import asyncio
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, Literal
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
-from typing import Literal
 
+LOG = logging.getLogger(__name__)
 SAMPLE_RATE = 24000
 CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 LATIN = re.compile(r"[A-Za-z]")
@@ -25,50 +29,90 @@ class SpeechRequest(BaseModel):
 
 
 def detect_language(text: str) -> Literal["ru", "en"]:
-    """Use Russian for mixed Russian sentences with Latin technology names."""
-    russian = len(CYRILLIC.findall(text))
-    english = len(LATIN.findall(text))
-    return "en" if english > russian * 1.6 and english > 0 else "ru"
+    """Prefer Russian for Russian sentences containing Latin technology terms."""
+    ru = len(CYRILLIC.findall(text))
+    en = len(LATIN.findall(text))
+    return "en" if en > ru * 1.6 and en > 0 else "ru"
 
 
-def render_pcm(model: object, text: str, language: str) -> bytes:
-    """Call Chatterbox with its language tag; convert float audio to PCM16."""
-    wave = model.generate(text, language_id=language)
-    output_rate = int(model.sr)
-    if output_rate != SAMPLE_RATE:
-        raise ValueError(f"Unexpected model sample rate: {output_rate}")
-    if hasattr(wave, "detach"):
-        wave = wave.detach().cpu().numpy()
-    samples = np.asarray(wave, dtype=np.float32).reshape(-1)
+def select_voice(
+    model: Any, speaker: str = "Asya Anara", reference_wav: str = "",
+) -> dict[str, str]:
+    """Use exactly one voice selector; never silently choose a different voice."""
+    if reference_wav:
+        path = Path(reference_wav)
+        if not path.is_file() or path.suffix.casefold() != ".wav":
+            raise ValueError("XTTS reference audio is missing or is not a WAV file")
+        return {"speaker_wav": str(path)}
+    if not speaker.strip():
+        raise ValueError("XTTS_SPEAKER must name an installed voice")
+    speakers = getattr(model, "speakers", None)
+    if speakers is not None and speaker not in speakers:
+        raise ValueError("Configured XTTS speaker is not available")
+    return {"speaker": speaker}
+
+
+def render_pcm(model: Any, text: str, language: str, voice: dict[str, str]) -> bytes:
+    """Call coqui-tts once, then convert samples to 24kHz signed PCM16."""
+    wav = model.tts(
+        text=text, language=language, split_sentences=True, **voice,
+    )
+    synth = getattr(model, "synthesizer", None)
+    rate = getattr(synth, "output_sample_rate", getattr(model, "sr", SAMPLE_RATE))
+    if int(rate) != SAMPLE_RATE:
+        raise ValueError(f"XTTS output sample rate must be {SAMPLE_RATE}, got {rate}")
+    if hasattr(wav, "detach"):
+        wav = wav.detach().cpu().numpy()
+    samples = np.asarray(wav, dtype=np.float32).reshape(-1)
     if not samples.size or not np.isfinite(samples).all():
-        raise RuntimeError("TTS produced empty or nonfinite audio")
-    return (np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes()
+        raise RuntimeError("XTTS returned empty or invalid audio")
+    return (np.clip(samples, -1.0, 1.0) * 32767).astype("<i2").tobytes()
 
 
-def create_app(model_override: object = None) -> FastAPI:
+def load_xtts(model_dir: Path) -> Any:
+    """Load the downloaded, pinned checkpoint without a runtime network request."""
+    import torch
+    from TTS.api import TTS
+
+    for name in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
+        if not (model_dir / name).is_file():
+            raise RuntimeError("XTTS weights unavailable: " + name)
+    model = TTS(
+        model_path=str(model_dir),
+        config_path=str(model_dir / "config.json"),
+        progress_bar=False,
+    )
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    LOG.info("XTTS-v2 model loaded on %s", device)
+    return model
+
+
+def create_app(model_override: Any = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         if model_override is None:
-            import torch
-            from chatterbox.mtl_tts import ChatterboxMultilingualTTS
-
-            device = "cuda" if torch.cuda.is_available() else "cpu"
             model = await asyncio.to_thread(
-                ChatterboxMultilingualTTS.from_pretrained,
-                device=device,
-                t3_model="v3",
+                load_xtts, Path(os.environ.get("XTTS_MODEL_DIR", "/models/huggingface/xtts-v2"))
             )
         else:
             model = model_override
+        voice = select_voice(
+            model,
+            os.environ.get("XTTS_SPEAKER", "Asya Anara"),
+            os.environ.get("XTTS_SPEAKER_WAV", "").strip(),
+        )
         app.state.model = model
+        app.state.voice = voice
         app.state.inference_lock = asyncio.Lock()
+        LOG.info("XTTS voice mode: %s", "reference" if "speaker_wav" in voice else "preset")
         yield
 
-    application = FastAPI(title="elecroHR multilingual TTS", lifespan=lifespan)
+    application = FastAPI(title="elecroHR XTTS-v2", lifespan=lifespan)
 
     @application.get("/health/ready")
     async def readiness() -> dict[str, str]:
-        return {"status": "ready", "model": "chatterbox-multilingual-v3"}
+        return {"status": "ready", "model": "xtts-v2"}
 
     @application.post("/synthesize")
     async def synthesize(body: SpeechRequest) -> Response:
@@ -76,10 +120,11 @@ def create_app(model_override: object = None) -> FastAPI:
         async with application.state.inference_lock:
             try:
                 pcm = await asyncio.to_thread(
-                    render_pcm, application.state.model, body.text, language
+                    render_pcm, application.state.model, body.text,
+                    language, application.state.voice,
                 )
             except Exception:
-                # Detailed exceptions stay in server logs; clients get normalized codes.
+                LOG.exception("XTTS inference failed")
                 raise HTTPException(status_code=503, detail="tts_inference_failed") from None
         return Response(
             content=pcm,

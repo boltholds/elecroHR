@@ -1,21 +1,25 @@
-# Isolated CUDA environment. Python app/Whisper keeps its independent CPU dependencies.
-FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+# CUDA isolated TTS runtime; Whisper and VAD stay in the CPU FastAPI container.
+# Torch 2.5.1 avoids PyTorch 2.6's changed default weights_only loading
+# for the trusted pinned Coqui XTTS-v2 checkpoint.
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
     HF_HOME=/models/huggingface \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    XTTS_MODEL_DIR=/models/huggingface/xtts-v2
 
 WORKDIR /srv
-RUN apt-get update && apt-get install -y --no-install-recommends git libsndfile1 ffmpeg \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libsndfile1 ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# Archived upstream pinned to a specific revision with multilingual V3 support.
-RUN pip install --no-cache-dir \
-    "chatterbox-tts @ git+https://github.com/resemble-ai/chatterbox.git@ab55923c27757c90cfcc407baa57dc25a7d25217" \
-    "fastapi>=0.115,<1" "uvicorn>=0.32,<1" "numpy>=1.24,<2"
+# Actively maintained fork of Coqui TTS, pinned for repeatable builds.
+RUN python -m pip install --no-cache-dir \
+    "coqui-tts==0.28.0" \
+    "fastapi>=0.115,<1" "uvicorn>=0.32,<1" \
+    "numpy>=1.24,<2" "huggingface-hub>=0.27,<1"
 
 COPY tts_service ./tts_service
-
 EXPOSE 8011
 CMD ["uvicorn", "tts_service.server:app", "--host", "0.0.0.0", "--port", "8011", "--workers", "1"]

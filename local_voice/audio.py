@@ -1,6 +1,6 @@
 """Audio inference adapters for Whisper and Silero VAD.
 
-TTS is now a separate Chatterbox multilingual container accessed over HTTP.
+TTS uses an isolated XTTS-v2 RU/EN container accessed over HTTP.
 Mic input: PCM16/16kHz. Speaker output: PCM16/24kHz.
 """
 import numpy as np
