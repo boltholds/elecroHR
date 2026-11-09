@@ -77,3 +77,31 @@ def test_download_file_check(tmp_path: Path):
     for name in FILES:
         (tmp_path / name).write_bytes(b"x")
     assert required_files_present(tmp_path)
+
+
+async def test_xtts_http_api_remains_compatible(monkeypatch):
+    import httpx
+
+    from tts_service.server import create_app
+
+    monkeypatch.setenv("XTTS_SPEAKER", "Asya Anara")
+    monkeypatch.delenv("XTTS_SPEAKER_WAV", raising=False)
+    model = FakeXTTS()
+    app = create_app(model_override=model)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://tts:8011",
+        ) as client:
+            ready = await client.get("/health/ready")
+            assert ready.status_code == 200
+            assert ready.json()["model"] == "xtts-v2"
+
+            response = await client.post(
+                "/synthesize", json={"text": "Здравствуйте!", "language": "auto"}
+            )
+            assert response.status_code == 200
+            assert response.content
+            assert response.headers["x-sample-rate"] == "24000"
+            assert response.headers["x-tts-language"] == "ru"
+            assert model.calls[-1]["speaker"] == "Asya Anara"
