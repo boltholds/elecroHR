@@ -94,3 +94,38 @@ GET http://localhost:8000/health показывает размер question bank
     docker-compose -f compose.yaml -f compose.gpu.yaml down
 
 Не запускайте down -v, если нужны данные из volumes.
+
+
+## Если tts-model-init показывает Fetching 6 files: 0%
+
+Это означает, что ни один из шести файлов пока не был целиком загружен,
+но крупные веса T3 (~2,14 ГБ) и S3Gen (~1,06 ГБ) могут скачиваться в это
+время. Не удаляйте volumes и не запускайте повторно up, пока не проверите
+состояние текущего процесса:
+
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml ps -a
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml exec -T tts-model-init du -sh /models/huggingface
+
+Если размер папки растёт, загрузка продолжается. Если контейнер завершился,
+смотрите его последние ошибки:
+
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml logs --tail=120 tts-model-init
+
+Если Hugging Face возвращает rate limit или не отвечает, в Windows
+PowerShell можно создать локальный .env из .env.local.example. При
+необходимости укажите в .env собственный HF_TOKEN с разрешением read.
+Файл .env исключён из Git; не отправляйте токен в логи или в чат.
+
+    Copy-Item .env.local.example .env
+
+HF_HUB_DOWNLOAD_TIMEOUT и HF_HUB_ETAG_TIMEOUT в Compose увеличены по
+умолчанию. Если видны сетевые ошибки именно hf-xet, попробуйте поменять
+HF_HUB_DISABLE_XET=1 в .env и перезапустить только подготовку моделей.
+Это запасной вариант, который может работать медленнее.
+
+Проверка доступности Hugging Face из работающего контейнера:
+
+    docker-compose.exe -f .\compose.yaml -f .\compose.gpu.yaml exec -T tts-model-init python -c "import urllib.request; print(urllib.request.urlopen('https://huggingface.co', timeout=20).status)"
+
+После успешной подготовки tts-model-init должен выйти с кодом 0, затем
+стартует TTS, и только после его healthcheck поднимется app на порту 8000.
