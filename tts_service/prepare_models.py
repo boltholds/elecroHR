@@ -6,8 +6,6 @@ contains pickle objects, only use this trusted source; do not load arbitrary fil
 import os
 from pathlib import Path
 
-from huggingface_hub import snapshot_download
-
 REPO_ID = "coqui/XTTS-v2"
 REVISION = "143a5149406459c326c1a41934f52a1395012409"
 FILES = (
@@ -30,6 +28,8 @@ def main() -> None:
     model_dir = Path(os.environ.get("XTTS_MODEL_DIR", "/models/huggingface/xtts-v2"))
     model_dir.mkdir(parents=True, exist_ok=True)
     if not required_files_present(model_dir):
+        from huggingface_hub import snapshot_download
+
         snapshot_download(
             repo_id=REPO_ID,
             revision=REVISION,
