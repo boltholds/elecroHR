@@ -25,11 +25,13 @@ class RAGService:
             self.df.update(terms.keys())
 
     @classmethod
-    async def load(cls, directory: Path) -> "RAGService":
+    async def load(cls, directory: Path, only_documents: frozenset[str] | None = None) -> "RAGService":
         def read() -> list[RetrievedChunk]:
             chunks = []
             for path in sorted(directory.rglob("*.md")):
                 source = path.relative_to(directory).as_posix()
+                if only_documents is not None and source not in only_documents:
+                    continue
                 for paragraph in re.split(r"\n\s*\n", path.read_text(encoding="utf-8")):
                     words = paragraph.split()
                     for offset in range(0, len(words), 160):
@@ -62,4 +64,4 @@ class RAGService:
                     )
             if score > 0:
                 results.append(chunk.model_copy(update={"score": score}))
-        return sorted(results, key=lambda c: (-c.score, c.chunk_id))[: max(0, min(top_k, 10))]
+        return sorted(results, key=lambda c: (-c.score, c.chunk_id))[: max(0, min(top_k, len(self.chunks)))]
