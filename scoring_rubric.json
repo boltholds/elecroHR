@@ -1,0 +1,12 @@
+{
+  "criteria": [
+    {"criterion": "python_fastapi", "max_score": 35, "guidance": "Python correctness, FastAPI validation, dependency injection, REST design and testing."},
+    {"criterion": "postgresql_sql", "max_score": 25, "guidance": "SQL correctness, transactions, indexes and EXPLAIN; ask for concrete tradeoffs."},
+    {"criterion": "docker", "max_score": 20, "guidance": "Image layers, reproducible builds, multi-stage builds, runtime configuration and secrets."},
+    {"criterion": "async_python", "max_score": 20, "guidance": "Event loop, blocking versus async I/O, cancellation, timeouts and bounded concurrency."}
+  ],
+  "anchors": {"0": "Concrete answer demonstrates incorrect understanding", "0.25": "Basic terminology with substantial gaps", "0.5": "Correct basics with a concrete example", "0.75": "Explains tradeoffs and failures", "1": "Accurate detailed reasoning with production examples"},
+  "missing_data": "assessed=false, score=0, evidence=[]; zero is a placeholder, not a judgement",
+  "evidence": "Exact candidate transcript quotations only; never agent statements",
+  "decision": "manual_review only; no automatic rejection"
+}
