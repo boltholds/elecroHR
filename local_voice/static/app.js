@@ -116,6 +116,23 @@ async function start() {
             audioFinished = true; acknowledgeIfDone();
           }
           break;
+        case "dialogue": {
+          const p = event.profile;
+          const stages = {
+            availability: "Уточняем удобное время",
+            name: "Знакомство: имя",
+            address: "Знакомство: обращение",
+            confirmation: "Подтверждение обращения",
+            screening: "Техническое интервью",
+            finished: "Интервью завершено",
+          };
+          $("dialogue-stage").textContent = "Этап: " + (stages[p.phase] || p.phase);
+          $("candidate-profile").textContent = p.confirmed
+            ? p.name + " · на «" + p.form + "»"
+            : "Имя и обращение пока не подтверждены";
+          break;
+        }
+        case "session_finished": void finish(); break;
         case "agent_text": addLine("agent", event.text); break;
         case "candidate_text": addLine("candidate", event.text); break;
         case "interrupt": stopPlayback(); break;
