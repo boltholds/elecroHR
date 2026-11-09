@@ -7,7 +7,8 @@ from local_voice.audio import validate_tts_response
 
 def test_pcm24k_wire_response_is_valid():
     response = httpx.Response(
-        200, headers={"X-Sample-Rate": "24000"}, content=b"\x00\x00\x01\x00"
+        200, headers={"X-Sample-Rate": "24000"}, content=b"\x00\x00\x01\x00",
+        request=httpx.Request("POST", "http://tts:8011/synthesize")
     )
     assert validate_tts_response(response) == b"\x00\x00\x01\x00"
 
@@ -19,7 +20,10 @@ def test_pcm24k_wire_response_is_valid():
 ])
 def test_bad_pcm_is_rejected(headers, content):
     with pytest.raises(ValueError):
-        validate_tts_response(httpx.Response(200, headers=headers, content=content))
+        validate_tts_response(httpx.Response(
+            200, headers=headers, content=content,
+            request=httpx.Request("POST", "http://tts:8011/synthesize"),
+        ))
 
 
 def test_tts_http_error_is_raised():
