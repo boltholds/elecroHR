@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import re
+from time import perf_counter
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
@@ -136,6 +137,7 @@ def create_app(model_override: Any = None) -> FastAPI:
     async def synthesize(body: SpeechRequest) -> Response:
         language = detect_language(body.text) if body.language == "auto" else body.language
         async with application.state.inference_lock:
+            started = perf_counter()
             try:
                 pcm = await asyncio.to_thread(
                     render_pcm, application.state.model, body.text,
@@ -144,10 +146,15 @@ def create_app(model_override: Any = None) -> FastAPI:
             except Exception:
                 LOG.exception("XTTS inference failed")
                 raise HTTPException(status_code=503, detail="tts_inference_failed") from None
+            inference_ms = (perf_counter() - started) * 1000.0
         return Response(
             content=pcm,
             media_type="application/octet-stream",
-            headers={"X-Sample-Rate": str(SAMPLE_RATE), "X-TTS-Language": language},
+            headers={
+                "X-Sample-Rate": str(SAMPLE_RATE),
+                "X-TTS-Language": language,
+                "X-TTS-Model-Ms": f"{inference_ms:.2f}",
+            },
         )
 
     return application

@@ -28,6 +28,13 @@
       <div class="section-heading"><h3>Диалог</h3><span id="rag">RAG не использован</span></div>
       <div class="transcript" id="transcript" aria-live="polite"><p class="empty">Здесь появятся реплики после начала разговора.</p></div>
     </section>
+    <section id="timing-panel" class="panel" aria-label="Метрики производительности">
+      <div class="section-heading"><h3>Задержки по этапам</h3><span id="timing-turn">Нет данных</span></div>
+      <p class="timing-note">Время в миллисекундах. Прочерк означает, что этап не выполнялся; значения до первого аудио и полного ответа включают предыдущие этапы.</p>
+      <div id="timing-grid" class="timing-grid" aria-live="polite"></div>
+      <p id="timing-summary" class="timing-summary">Измерения начнутся после подключения.</p>
+      <details class="timing-details"><summary>Последние реплики и история замеров</summary><pre id="timing-history"></pre></details>
+    </section>
     <section id="result" class="panel" hidden><h3>Отчёт для HR</h3><pre id="report"></pre></section>
   </main>
   <script type="module" src="/static/app.js"></script>

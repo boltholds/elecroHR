@@ -6,6 +6,7 @@ No private chain-of-thought is requested, persisted, or exposed.
 """
 import json
 import re
+from time import perf_counter
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Literal, TypeVar
@@ -81,6 +82,12 @@ GREETING = (
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def record_stage(timings_ms: dict[str, float] | None, name: str, started: float) -> None:
+    if timings_ms is not None:
+        timings_ms[name] = timings_ms.get(name, 0.0) + (perf_counter() - started) * 1000
+
 
 
 def verified_name(name: str, evidence: str, utterance: str) -> str:
@@ -161,12 +168,17 @@ class HRDialogue:
 
     def vacancy_turn(
         self, question: str, rag: RAGService, search_query: str = "",
+        timings_ms: dict[str, float] | None = None,
     ) -> Turn:
         """Answer a candidate's vacancy question from public RAG evidence."""
         query = search_query.strip() or question
-        hits = rag.search_vacancy(query, top_k=5)
-        if not hits and search_query.strip():
-            hits = rag.search_vacancy(question, top_k=5)
+        rag_started = perf_counter()
+        try:
+            hits = rag.search_vacancy(query, top_k=5)
+            if not hits and search_query.strip():
+                hits = rag.search_vacancy(question, top_k=5)
+        finally:
+            record_stage(timings_ms, "vacancy_rag_ms", rag_started)
         self.actions.append({"action": "search_vacancy", "query": query})
         self.actions = self.actions[-20:]
         if not hits:
@@ -206,6 +218,7 @@ class HRDialogue:
         config: LocalSettings,
         rag: RAGService,
         questions: QuestionBank | None = None,
+        timings_ms: dict[str, float] | None = None,
     ) -> Turn:
         if self.phase == Phase.finished:
             return Turn(text="Разговор завершён. Спасибо!")
@@ -214,7 +227,7 @@ class HRDialogue:
         # including introductions. Answer and resume the same phase afterwards.
         from local_voice.vacancy import is_vacancy_question
         if is_vacancy_question(utterance):
-            return self.vacancy_turn(utterance, rag)
+            return self.vacancy_turn(utterance, rag, timings_ms=timings_ms)
 
         if self.phase == Phase.availability:
             intent = await self.structured(
@@ -300,10 +313,14 @@ class HRDialogue:
             self.phase = Phase.screening
             # First technical question must come from the source bank when available.
             if questions is not None:
-                selected = questions.next_question(
-                    "основы LLM генеративный искусственный интеллект токен модель",
-                    set(self.asked_question_ids),
-                )
+                rag_started = perf_counter()
+                try:
+                    selected = questions.next_question(
+                        "основы LLM генеративный искусственный интеллект токен модель",
+                        set(self.asked_question_ids),
+                    )
+                finally:
+                    record_stage(timings_ms, "question_rag_ms", rag_started)
                 if selected is not None:
                     self.pending_question_id = selected.question_id
                     self.pending_focus = "llm_fundamentals"
@@ -320,7 +337,9 @@ class HRDialogue:
             )
             return Turn(text=f"Отлично, {self.preferred_name}. Начнём с LLM. {question}")
 
-        return await self.plan_screening(utterance, transcript, client, config, rag, questions)
+        return await self.plan_screening(
+            utterance, transcript, client, config, rag, questions, timings_ms
+        )
 
     async def plan_screening(
         self,
@@ -330,6 +349,7 @@ class HRDialogue:
         config: LocalSettings,
         rag: RAGService,
         questions: QuestionBank | None = None,
+        timings_ms: dict[str, float] | None = None,
     ) -> Turn:
         history = json.dumps(transcript[-14:], ensure_ascii=False)
         request = json.dumps({
@@ -342,11 +362,14 @@ class HRDialogue:
             "latest_candidate_utterance": utterance,
             "history": history,
         }, ensure_ascii=False)
+        react_started = perf_counter()
         try:
             decision = await self.structured(client, config, ReActDecision, SCENARIO, request)
         except (httpx.HTTPError, ValueError, KeyError):
             # Retry rather than guessing a vacancy answer or silently changing topics.
             return Turn(text="Извините, не удалось обработать вопрос. Повторите, пожалуйста.")
+        finally:
+            record_stage(timings_ms, "react_llm_ms", react_started)
         action = decision.action
         self.actions.append({"action": action, "focus": decision.focus, "query": decision.query})
         self.actions = self.actions[-20:]
@@ -368,10 +391,16 @@ class HRDialogue:
         if action == "search_vacancy":
             # vacancy_turn records the action itself; do not duplicate it.
             self.actions.pop()
-            return self.vacancy_turn(utterance, rag, search_query=decision.query)
+            return self.vacancy_turn(
+                utterance, rag, search_query=decision.query, timings_ms=timings_ms
+            )
         if questions is not None:
             query = decision.query.strip() or decision.instruction.strip() or utterance
-            selected = questions.next_question(query, set(self.asked_question_ids))
+            rag_started = perf_counter()
+            try:
+                selected = questions.next_question(query, set(self.asked_question_ids))
+            finally:
+                record_stage(timings_ms, "question_rag_ms", rag_started)
             if selected is None:
                 self.phase = Phase.finished
                 return Turn(text=f"Спасибо, {self.preferred_name}. Вопросы закончились. До свидания!")

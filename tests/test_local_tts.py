@@ -104,6 +104,7 @@ async def test_xtts_http_api_remains_compatible(monkeypatch):
             assert response.content
             assert response.headers["x-sample-rate"] == "24000"
             assert response.headers["x-tts-language"] == "ru"
+            assert float(response.headers["x-tts-model-ms"]) >= 0.0
             assert model.calls[-1]["speaker"] == "Asya Anara"
 
 

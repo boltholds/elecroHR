@@ -32,3 +32,42 @@ def test_tts_http_error_is_raised():
             503, headers={"X-Sample-Rate": "24000"}, content=b"\x00\x00",
             request=httpx.Request("POST", "http://tts:8011/synthesize"),
         ))
+
+
+
+def test_tts_client_collects_server_inference_header():
+    from local_voice.audio import AudioModels
+
+    def handler(request):
+        return httpx.Response(
+            200, request=request, content=b"\x01\x00",
+            headers={
+                "X-Sample-Rate": "24000", "X-TTS-Model-Ms": "35.25",
+            }
+        )
+
+    audio = AudioModels.__new__(AudioModels)
+    audio.tts_url = "http://tts:8011/synthesize"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        audio._http = client
+        pcm, timings = audio.synthesize_timed("Здравствуйте.")
+    assert pcm == b"\x01\x00"
+    assert timings["tts_model_ms"] == 35.25
+
+
+def test_tts_client_remains_compatible_with_server_without_timing_header():
+    from local_voice.audio import AudioModels
+
+    def handler(request):
+        return httpx.Response(
+            200, request=request, content=b"\x01\x00",
+            headers={"X-Sample-Rate": "24000"}
+        )
+
+    audio = AudioModels.__new__(AudioModels)
+    audio.tts_url = "http://tts:8011/synthesize"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        audio._http = client
+        pcm, timings = audio.synthesize_timed("Hello")
+    assert pcm == b"\x01\x00"
+    assert timings == {}

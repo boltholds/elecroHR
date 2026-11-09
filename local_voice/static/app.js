@@ -2,6 +2,75 @@ const $ = (id) => document.getElementById(id);
 let ws, context, microphone, captureNode, sourceNode, sessionId;
 let muted = false, generation = -1, audioFinished = false, scheduled = 0, playing = 0;
 let sources = [], textLines = [];
+let playbackStartedAt = 0;
+let timingHistory = new Map();
+let timingSummary = {completed_turns: 0, average_ms: {}, p95_ms: {}};
+
+const TIMING_LABELS = [
+  ["vad_cpu_ms", "VAD — CPU"],
+  ["speech_capture_ms", "Запись фразы"],
+  ["stt_ms", "Whisper STT"],
+  ["react_llm_ms", "ReAct — выбор действия"],
+  ["vacancy_rag_ms", "RAG вакансии"],
+  ["question_rag_ms", "RAG вопросов"],
+  ["dialogue_ms", "Диалог всего"],
+  ["llm_http_ms", "LLM — ответ (HTTP)"],
+  ["ollama_load_ms", "Ollama — загрузка"],
+  ["ollama_prompt_ms", "Ollama — prompt evaluation"],
+  ["ollama_decode_ms", "Ollama — генерация токенов"],
+  ["tts_http_ms", "TTS — полный запрос"],
+  ["tts_model_ms", "XTTS — инференс"],
+  ["websocket_send_ms", "WebSocket — отправка"],
+  ["first_audio_ms", "До первого аудио"],
+  ["backend_ms", "Backend до audio_end"],
+  ["client_playback_ms", "Воспроизведение браузером"],
+  ["playback_ack_ms", "Ожидание подтверждения"],
+  ["end_to_end_ms", "До конца воспроизведения"],
+];
+
+function formatMs(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return "—";
+  return value >= 1000 ? (value / 1000).toFixed(2) + " с" : value.toFixed(1) + " мс";
+}
+function showTiming(event) {
+  timingHistory.set(event.timing.turn_id, event.timing);
+  timingSummary = event.summary || timingSummary;
+  const last = event.timing;
+  const stateNames = {
+    running: "обрабатывается", completed: "завершено",
+    interrupted: "прервано", failed: "ошибка", no_speech: "нет речи",
+  };
+  $("timing-turn").textContent =
+    "Реплика #" + last.turn_id + " · " + (last.kind === "greeting" ? "приветствие" : last.phase) +
+    " · " + (stateNames[last.status] || last.status);
+
+  const grid = $("timing-grid");
+  grid.replaceChildren();
+  for (const [key, label] of TIMING_LABELS) {
+    const cell = document.createElement("div");
+    cell.className = "timing-item";
+    const name = document.createElement("span");
+    name.textContent = label;
+    const value = document.createElement("strong");
+    value.textContent = formatMs(last.stages_ms[key]);
+    cell.append(name, value);
+    grid.appendChild(cell);
+  }
+  $("timing-summary").textContent =
+    "Завершённых реплик: " + timingSummary.completed_turns +
+    " · среднее до первого аудио: " + formatMs(timingSummary.average_ms?.first_audio_ms) +
+    " · p95: " + formatMs(timingSummary.p95_ms?.first_audio_ms) +
+    " · среднее полное время: " + formatMs(timingSummary.average_ms?.end_to_end_ms);
+  const rows = Array.from(timingHistory.values()).slice(-12).reverse();
+  $("timing-history").textContent = rows.map(item => (
+    "#" + item.turn_id + " (" + item.status + ") — STT " +
+    formatMs(item.stages_ms.stt_ms) + ", LLM " +
+    formatMs(item.stages_ms.llm_http_ms || item.stages_ms.react_llm_ms) +
+    ", TTS " + formatMs(item.stages_ms.tts_http_ms) +
+    ", всего " + formatMs(item.stages_ms.end_to_end_ms || item.stages_ms.backend_ms)
+  )).join("\n");
+}
+
 
 function addLine(role, text) {
   if (!text.trim()) return;
@@ -28,15 +97,19 @@ function stopPlayback() {
   playing = 0;
   scheduled = context ? context.currentTime : 0;
   audioFinished = false;
+  playbackStartedAt = 0;
 }
 function acknowledgeIfDone() {
   if (audioFinished && playing === 0 && ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({type: "playback_done", generation}));
+    const playbackMs = playbackStartedAt > 0 ? performance.now() - playbackStartedAt : 0;
+    ws.send(JSON.stringify({type: "playback_done", generation, playback_ms: playbackMs}));
     audioFinished = false;
+    playbackStartedAt = 0;
   }
 }
 function playPCM(bytes) {
   if (!context || generation < 0) return;
+  if (playbackStartedAt === 0) playbackStartedAt = performance.now();
   const data = new DataView(bytes);
   const count = Math.floor(data.byteLength / 2);
   const buffer = context.createBuffer(1, count, 24000);
@@ -70,6 +143,12 @@ async function start() {
     return;
   }
   $("start").disabled = true;
+  timingHistory = new Map();
+  timingSummary = {completed_turns: 0, average_ms: {}, p95_ms: {}};
+  $("timing-grid").replaceChildren();
+  $("timing-summary").textContent = "Измерения начнутся после подключения.";
+  $("timing-history").textContent = "";
+  $("timing-turn").textContent = "Нет данных";
   $("status").textContent = "Подключение...";
   try {
     // Get microphone permission before reserving the single backend session.
@@ -99,6 +178,7 @@ async function start() {
       if (data instanceof ArrayBuffer) { playPCM(data); return; }
       const event = JSON.parse(data);
       switch (event.type) {
+        case "timing": showTiming(event); break;
         case "state":
           $("status").textContent = {
             created: "Подключение", listening: "Слушаю кандидата",
@@ -173,6 +253,13 @@ async function finish() {
     if (!res.ok) throw new Error("Ошибка формирования отчёта: HTTP " + res.status);
     const report = await res.json();
     $("report").textContent = JSON.stringify(report, null, 2);
+    try {
+      const metricsResponse = await fetch("/sessions/" + sessionId + "/metrics");
+      if (metricsResponse.ok) {
+        const metrics = await metricsResponse.json();
+        $("timing-history").textContent += "\n\nИтог по сессии:\n" + JSON.stringify(metrics, null, 2);
+      }
+    } catch (_) { /* Nonessential diagnostics. */ }
     $("result").hidden = false;
     $("status").textContent = "Завершено: " + report.score + "/100 (проверяет HR)";
   } catch (err) {

@@ -3,6 +3,7 @@ import asyncio
 import json
 import logging
 import re
+from time import perf_counter
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,7 @@ from local_voice.scoring import score_transcript
 from local_voice.replies import (SPEECH_CONTRACT_VERSION, candidate_facing_text,
                                  generate_candidate_reply, safe_reply_fallback)
 from local_voice.settings import LocalSettings
+from local_voice.metrics import TurnTiming, elapsed_ms, summarize_timings, METRICS_CONTRACT_VERSION
 
 LOG = logging.getLogger(__name__)
 STATIC = Path(__file__).parent / "static"
@@ -63,6 +65,42 @@ class Interview:
     _send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _finish_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     detector: EndpointDetector = field(default_factory=EndpointDetector)
+    timings: list[TurnTiming] = field(default_factory=list)
+    active_timing: TurnTiming | None = None
+    scoring_ms: float = 0.0
+    _vad_cpu_ms: float = 0.0
+    _vad_frames: int = 0
+    _speech_started_at: float = 0.0
+    _audio_end_at: float = 0.0
+
+    def begin_timing(self, kind: str = "candidate") -> TurnTiming:
+        if self.active_timing is not None and self.active_timing.status == "running":
+            self.active_timing.finish("interrupted")
+        timing = TurnTiming(
+            turn_id=len(self.timings) + 1,
+            phase=self.dialogue.phase.value if kind == "candidate" else "greeting",
+            kind="greeting" if kind == "greeting" else "candidate",
+        )
+        self.timings.append(timing)
+        self.active_timing = timing
+        return timing
+
+    def metrics_public(self) -> dict[str, Any]:
+        return {
+            "contract": METRICS_CONTRACT_VERSION,
+            "summary": summarize_timings(self.timings),
+            "turns": [item.public() for item in self.timings],
+            "scoring_ms": round(self.scoring_ms, 2),
+        }
+
+    async def emit_timing(self, timing: TurnTiming | None = None) -> None:
+        target = timing or self.active_timing
+        if target is not None:
+            await self.send({
+                "type": "timing",
+                "timing": target.public(),
+                "summary": summarize_timings(self.timings),
+            })
 
     async def send(self, payload: dict[str, Any]) -> None:
         if self.ws:
@@ -79,6 +117,7 @@ class Interview:
         await self.send({"type": "state", "state": state})
 
     async def greet(self) -> None:
+        self.begin_timing("greeting")
         if self.questions is not None:
             await self.send({"type": "question_bank", "total": len(self.questions.questions)})
         await self.send({"type": "dialogue", "profile": self.dialogue.public_view()})
@@ -97,15 +136,37 @@ class Interview:
         self.pending_text = ""
         await self.set_state("speaking")
         await self.send({"type": "audio_start", "generation": ident, "sample_rate": 24000})
+        timing = self.active_timing
         try:
             for sentence in [text]:
-                pcm = await asyncio.to_thread(self.audio.synthesize, sentence)
+                tts_started = perf_counter()
+                if hasattr(self.audio, "synthesize_timed"):
+                    pcm, details = await asyncio.to_thread(
+                        self.audio.synthesize_timed, sentence
+                    )
+                else:
+                    pcm = await asyncio.to_thread(self.audio.synthesize, sentence)
+                    details = {}
+                if timing is not None:
+                    timing.add("tts_http_ms", elapsed_ms(tts_started))
+                    for name, value in details.items():
+                        timing.add(name, value)
+                    await self.emit_timing(timing)
                 if self.state != "speaking" or ident != self.generation:
                     return
                 await self.send({"type": "agent_text", "text": sentence})
                 self.pending_text += sentence + " "
+                send_started = perf_counter()
                 await self.send_pcm(pcm)
+                if timing is not None:
+                    timing.add("websocket_send_ms", elapsed_ms(send_started))
+                    if "first_audio_ms" not in timing.stages_ms:
+                        timing.mark("first_audio_ms")
             await self.send({"type": "audio_end", "generation": ident})
+            self._audio_end_at = perf_counter()
+            if timing is not None:
+                timing.mark("backend_ms")
+                await self.emit_timing(timing)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -119,21 +180,39 @@ class Interview:
         if len(frame) != 1024:
             await self.send({"type": "error", "code": "invalid_audio_frame"})
             return
+        vad_started = perf_counter()
         confidence = self.audio.vad_probability(frame)
         started, completed = self.detector.feed(frame, confidence)
+        self._vad_cpu_ms += elapsed_ms(vad_started)
+        self._vad_frames += 1
+        if started:
+            self._speech_started_at = perf_counter()
         if started and self.state == "speaking":
             self.generation += 1
             self.dialogue.playback_interrupted()
             if self.reply_task and not self.reply_task.done():
                 self.reply_task.cancel()
             self.pending_text = ""
+            if self.active_timing is not None:
+                self.active_timing.finish("interrupted")
+                await self.emit_timing(self.active_timing)
+                self.active_timing = None
             await self.send({"type": "interrupt"})
             await self.set_state("listening")
         if completed and self.state == "listening":
+            timing = self.begin_timing()
+            timing.add("vad_cpu_ms", self._vad_cpu_ms)
+            timing.vad_frames = self._vad_frames
+            if self._speech_started_at:
+                timing.add("speech_capture_ms", elapsed_ms(self._speech_started_at))
+            self._vad_cpu_ms = 0.0
+            self._vad_frames = 0
+            self._speech_started_at = 0.0
             await self.set_state("thinking")
+            await self.emit_timing(timing)
             self.reply_task = asyncio.create_task(self.handle_turn(completed))
 
-    async def on_playback_done(self, generation: int) -> None:
+    async def on_playback_done(self, generation: int, playback_ms: float = 0.0) -> None:
         if self.state != "speaking" or generation != self.generation:
             return
         utterance = self.pending_text.strip()
@@ -144,6 +223,18 @@ class Interview:
                 self.screening_transcript.append(spoken)
         self.pending_text = ""
         self.dialogue.playback_confirmed()
+        if self.active_timing is not None:
+            if playback_ms > 0:
+                self.active_timing.add("client_playback_ms", playback_ms)
+            if self._audio_end_at:
+                self.active_timing.add("playback_ack_ms", elapsed_ms(self._audio_end_at))
+            self.active_timing.finish()
+            await self.emit_timing(self.active_timing)
+            self.active_timing = None
+        self._audio_end_at = 0.0
+        self._vad_cpu_ms = 0.0
+        self._vad_frames = 0
+        self._speech_started_at = 0.0
         self.detector.reset()
         self.audio.reset_vad()
         await self.set_state("listening")
@@ -151,9 +242,17 @@ class Interview:
             await self.send({"type": "session_finished"})
 
     async def handle_turn(self, pcm: bytes) -> None:
+        timing = self.active_timing or self.begin_timing()
         try:
+            stt_started = perf_counter()
             text = await asyncio.to_thread(self.audio.transcribe, pcm)
+            timing.add("stt_ms", elapsed_ms(stt_started))
+            await self.emit_timing(timing)
             if not text or self.state != "thinking":
+                timing.finish("no_speech")
+                await self.emit_timing(timing)
+                if self.active_timing is timing:
+                    self.active_timing = None
                 await self.set_state("listening")
                 return
             was_screening = self.dialogue.phase == Phase.screening
@@ -161,10 +260,15 @@ class Interview:
             if was_screening:
                 self.screening_transcript.append({"role": "candidate", "text": text})
             await self.send({"type": "candidate_text", "text": text})
-            plan = await self.dialogue.respond(
-                text, self.transcript, self.http, self.settings, self.rag,
-                self.questions,
-            )
+            dialogue_started = perf_counter()
+            try:
+                plan = await self.dialogue.respond(
+                    text, self.transcript, self.http, self.settings, self.rag,
+                    self.questions, timings_ms=timing.stages_ms,
+                )
+            finally:
+                timing.add("dialogue_ms", elapsed_ms(dialogue_started))
+            await self.emit_timing(timing)
             if self.state != "thinking":
                 return
             await self.send({"type": "dialogue", "profile": self.dialogue.public_view()})
@@ -178,6 +282,7 @@ class Interview:
 
             # Never stream raw model text directly into TTS or the transcript:
             # malformed content and model self-narration could become audible.
+            llm_started = perf_counter()
             try:
                 reply = await generate_candidate_reply(
                     client=self.http,
@@ -186,10 +291,14 @@ class Interview:
                     prompt=self.dialogue.reply_prompt(plan),
                     transcript=self.transcript,
                     vacancy=plan.response_type == "vacancy",
+                    timings_ms=timing.stages_ms,
                 )
             except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError):
                 LOG.exception("Failed to produce a validated candidate-facing reply")
                 reply = safe_reply_fallback(plan.response_type == "vacancy")
+            finally:
+                timing.add("llm_http_ms", elapsed_ms(llm_started))
+            await self.emit_timing(timing)
             if self.state != "thinking":
                 return
             await self.speak_text(reply)
@@ -197,6 +306,10 @@ class Interview:
             raise
         except Exception:
             LOG.exception("Voice turn failed")
+            timing.finish("failed")
+            await self.emit_timing(timing)
+            if self.active_timing is timing:
+                self.active_timing = None
             await self.send({"type": "error", "code": "agent_unavailable"})
             await self.set_state("listening")
 
@@ -222,10 +335,14 @@ class Interview:
                 return self.report
             self.generation += 1
             self.state = "completed"
+            if self.active_timing is not None:
+                self.active_timing.finish("interrupted")
+                self.active_timing = None
             if self.reply_task and not self.reply_task.done():
                 self.reply_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self.reply_task
+            score_started = perf_counter()
             try:
                 self.report = await score_transcript(
                     self.session_id, self.screening_transcript, self.settings, self.http
@@ -237,12 +354,15 @@ class Interview:
                     empty_assessment("Автоматическая проверка не удалась; требуется HR."),
                     "insufficient_data",
                 )
+            finally:
+                self.scoring_ms = elapsed_ms(score_started)
             path = self.settings.data_dir / (self.session_id + ".json")
             data = json.dumps(
                 {"transcript": self.transcript, "profile": self.dialogue.public_view(),
                  "actions": self.dialogue.actions,
                  "questions_asked": self.dialogue.asked_question_ids,
-                 "report": self.report.model_dump(mode="json")},
+                 "report": self.report.model_dump(mode="json"),
+                 "timings": self.metrics_public()},
                 ensure_ascii=False, indent=2,
             )
             def save() -> None:
@@ -288,7 +408,8 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
     async def health() -> dict[str, str | int]:
         return {"status": "ok", "mode": "local",
                 "questions": len(app.state.questions.questions),
-                "speech_contract": SPEECH_CONTRACT_VERSION}
+                "speech_contract": SPEECH_CONTRACT_VERSION,
+                "metrics_contract": METRICS_CONTRACT_VERSION}
 
     @app.post("/sessions", status_code=201)
     async def create_session(payload: Consent) -> dict[str, str]:
@@ -340,6 +461,10 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
     async def get_transcript(sid: str) -> list[dict[str, str]]:
         return get_session(sid).transcript
 
+    @app.get("/sessions/{sid}/metrics")
+    async def get_metrics(sid: str) -> dict[str, Any]:
+        return get_session(sid).metrics_public()
+
     @app.websocket("/ws/{sid}")
     async def voice_ws(websocket: WebSocket, sid: str) -> None:
         origin = websocket.headers.get("origin", "")
@@ -367,7 +492,10 @@ def create_local_app(settings: LocalSettings | None = None) -> FastAPI:
                 if content:
                     event = json.loads(content)
                     if event.get("type") == "playback_done":
-                        await session.on_playback_done(int(event.get("generation", -1)))
+                        await session.on_playback_done(
+                            int(event.get("generation", -1)),
+                            float(event.get("playback_ms", 0)),
+                        )
         except (WebSocketDisconnect, ValueError, json.JSONDecodeError):
             pass
         finally:

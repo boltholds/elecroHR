@@ -74,15 +74,31 @@ class AudioModels:
         )
         return " ".join(segment.text.strip() for segment in segments).strip()
 
-    def synthesize(self, text: str) -> bytes:
+    def synthesize_timed(self, text: str) -> tuple[bytes, dict[str, float]]:
+        """Return PCM and server-side XTTS inference time when available."""
         segments = split_tts_text(text)
         if not segments:
             raise ValueError("Cannot synthesize empty text")
         outputs: list[bytes] = []
+        model_ms = 0.0
+        saw_inference = False
         for segment in segments:
             response = self._http.post(
                 self.tts_url,
                 json={"text": segment, "language": "auto"},
             )
             outputs.append(validate_tts_response(response))
-        return b"".join(outputs)
+            header = response.headers.get("x-tts-model-ms", "")
+            if header:
+                try:
+                    value = float(header)
+                except ValueError:
+                    continue
+                if 0 <= value < 1_000_000 and np.isfinite(value):
+                    model_ms += value
+                    saw_inference = True
+        metrics = {"tts_model_ms": model_ms} if saw_inference else {}
+        return b"".join(outputs), metrics
+
+    def synthesize(self, text: str) -> bytes:
+        return self.synthesize_timed(text)[0]

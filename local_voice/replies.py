@@ -58,6 +58,7 @@ async def generate_candidate_reply(
     prompt: str,
     transcript: list[dict[str, str]],
     vacancy: bool,
+    timings_ms: dict[str, float] | None = None,
 ) -> str:
     """Only a validated JSON field is returned for browser and TTS output."""
     messages: list[dict[str, str]] = [
@@ -100,6 +101,18 @@ async def generate_candidate_reply(
     )
     response.raise_for_status()
     data: dict[str, Any] = response.json()
+    # Ollama reports its own backend phases in nanoseconds. These are
+    # independent timings and may overlap with our full HTTP wall time.
+    if timings_ms is not None:
+        for source_key, result_key in (
+            ("load_duration", "ollama_load_ms"),
+            ("prompt_eval_duration", "ollama_prompt_ms"),
+            ("eval_duration", "ollama_decode_ms"),
+            ("total_duration", "ollama_total_ms"),
+        ):
+            duration_ns = data.get(source_key)
+            if isinstance(duration_ns, (int, float)) and duration_ns >= 0:
+                timings_ms[result_key] = duration_ns / 1_000_000
     message = data.get("message", {})
     # Ignore message.thinking altogether. Never send the raw content directly.
     parsed = CandidateReply.model_validate_json(message["content"])
