@@ -1,7 +1,9 @@
 import pytest
 
-from app.schemas import Assessment, CriterionScore, WEIGHTS
-from local_voice.core import EndpointDetector, LocalReport, empty_assessment, make_report
+from local_voice.core import (
+    LOCAL_WEIGHTS, EndpointDetector, LocalAssessment, LocalCriterionScore,
+    LocalReport, empty_assessment, make_report,
+)
 from local_voice.server import sentences
 
 
@@ -42,13 +44,13 @@ def test_incomplete_score_is_explicit():
 
 def test_score_sum_and_weight_validation():
     criteria = [
-        CriterionScore(
+        LocalCriterionScore(
             criterion=key, score=weight, max_score=weight,
             evidence=["Показал рабочий пример."], assessed=True, explanation="Пример",
         )
-        for key, weight in WEIGHTS.items()
+        for key, weight in LOCAL_WEIGHTS.items()
     ]
-    assessment = Assessment(
+    assessment = LocalAssessment(
         criteria=criteria, strengths=[], weaknesses=[], summary="Хороший пример",
     )
     report = make_report("score-test", assessment, "ollama")
