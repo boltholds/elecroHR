@@ -241,10 +241,14 @@ class HRDialogue:
                 return Turn(text="Всё верно с именем и обращением? Можно ответить «да» или поправить меня.")
             self.confirmed = True
             self.phase = Phase.screening
-            return await self.plan_screening(
-                "Имя и обращение подтверждены. Начни первый технический вопрос.",
-                transcript, client, config, rag,
+            # First question is guaranteed; later turns go through ReAct planning.
+            self.pending_focus = "python_fastapi"
+            question = (
+                "Расскажи, пожалуйста, как ты использовал FastAPI в реальном проекте."
+                if self.form == "ты"
+                else "Расскажите, пожалуйста, как вы использовали FastAPI в реальном проекте."
             )
+            return Turn(text=f"Отлично, {self.preferred_name}. Начнём с Python. {question}")
 
         return await self.plan_screening(utterance, transcript, client, config, rag)
 
@@ -268,10 +272,8 @@ class HRDialogue:
         try:
             decision = await self.structured(client, config, ReActDecision, SCENARIO, request)
         except (httpx.HTTPError, ValueError, KeyError):
-            # A failed planner must never send an invented vacancy answer.
-            remaining = next((x for x in WEIGHTS if x not in self.asked), "async_python")
-            self.pending_focus = remaining
-            return Turn(instruction=f"Задай один уточняющий технический вопрос по {remaining}.")
+            # Retry rather than guessing a vacancy answer or silently changing topics.
+            return Turn(text="Извините, не удалось обработать вопрос. Повторите, пожалуйста.")
         action = decision.action
         self.actions.append({"action": action, "focus": decision.focus, "query": decision.query})
         self.actions = self.actions[-20:]
