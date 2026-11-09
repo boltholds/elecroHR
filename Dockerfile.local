@@ -1,0 +1,25 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    HF_HOME=/models/huggingface \
+    TORCH_HOME=/models/torch
+
+WORKDIR /srv
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 libsndfile1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements-local.txt .
+# CPU wheels keep the Python service off the GPU; Ollama owns the RTX 4070 Ti.
+RUN pip install --no-cache-dir torch==2.6.0 torchaudio==2.6.0 \
+    --index-url https://download.pytorch.org/whl/cpu \
+    && pip install --no-cache-dir -r requirements-local.txt
+
+COPY app ./app
+COPY local_voice ./local_voice
+COPY knowledge ./knowledge
+
+EXPOSE 8000
+CMD ["uvicorn", "local_voice.server:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

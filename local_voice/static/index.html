@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>elecroHR · Локальное интервью</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header><span class="mark">E</span><div><h1>elecroHR</h1><p>Локальный голосовой рекрутер · STT / Qwen3 / TTS</p></div></header>
+    <section class="panel call">
+      <div id="pulse" class="pulse"><span>AI</span></div>
+      <h2>Тестовое HR-интервью</h2>
+      <p id="status">Ожидает звонка</p>
+      <p id="dialogue-stage" class="note">Этап: знакомство</p>
+      <p id="question-bank" class="note">Загрузка банка вопросов...</p>
+      <p id="candidate-profile" class="note">Имя и обращение пока не подтверждены</p>
+      <p class="note">Для минимального эха используйте наушники. Данные разговора остаются на этом компьютере.</p>
+      <label class="consent"><input id="consent" type="checkbox"> Согласен на локальное сохранение текстовой расшифровки и автоматический анализ ответов для демонстрации.</label>
+      <div class="actions">
+        <button id="start">Начать интервью</button>
+        <button id="mute" disabled>Выключить микрофон</button>
+        <button id="end" class="danger" disabled>Завершить</button>
+      </div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><h3>Диалог</h3><span id="rag">RAG не использован</span></div>
+      <div class="transcript" id="transcript" aria-live="polite"><p class="empty">Здесь появятся реплики после начала разговора.</p></div>
+    </section>
+    <section id="timing-panel" class="panel" aria-label="Метрики производительности">
+      <div class="section-heading"><h3>Задержки по этапам</h3><span id="timing-turn">Нет данных</span></div>
+      <p class="timing-note">Время в миллисекундах. Прочерк означает, что этап не выполнялся; значения до первого аудио и полного ответа включают предыдущие этапы.</p>
+      <div id="timing-grid" class="timing-grid" aria-live="polite"></div>
+      <div class="ollama-section">
+        <h4>Профилирование Ollama</h4>
+        <p class="timing-note">Все вызовы Qwen3 для этой реплики. HTTP включает ожидание, передачу и инференс; «В Ollama» — серверное время. Эти значения не складываются.</p>
+        <div id="ollama-calls" class="ollama-calls"><p class="timing-note">Метрик пока нет.</p></div>
+        <pre id="ollama-summary" class="ollama-summary">Сводка появится после завершения реплик.</pre>
+      </div>
+      <p id="timing-summary" class="timing-summary">Измерения начнутся после подключения.</p>
+      <details class="timing-details"><summary>Последние реплики и история замеров</summary><pre id="timing-history"></pre></details>
+    </section>
+    <section id="result" class="panel" hidden><h3>Отчёт для HR</h3><pre id="report"></pre></section>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body>
+</html>
