@@ -77,11 +77,21 @@ def load_xtts(model_dir: Path) -> Any:
     for name in ("config.json", "model.pth", "vocab.json", "speakers_xtts.pth"):
         if not (model_dir / name).is_file():
             raise RuntimeError("XTTS weights unavailable: " + name)
-    model = TTS(
-        model_path=str(model_dir),
-        config_path=str(model_dir / "config.json"),
-        progress_bar=False,
-    )
+    # The official XTTS-v2 checkpoint embeds four Coqui config classes.
+    # Keep weights_only=True and allowlist only these known types while
+    # loading the checkpoint. Do not turn off safe loading globally.
+    from TTS.config.shared_configs import BaseDatasetConfig
+    from TTS.tts.configs.xtts_config import XttsConfig
+    from TTS.tts.models.xtts import XttsArgs, XttsAudioConfig
+
+    with torch.serialization.safe_globals(
+        [XttsConfig, XttsArgs, XttsAudioConfig, BaseDatasetConfig]
+    ):
+        model = TTS(
+            model_path=str(model_dir),
+            config_path=str(model_dir / "config.json"),
+            progress_bar=False,
+        )
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model.to(device)
     LOG.info("XTTS-v2 model loaded on %s", device)
